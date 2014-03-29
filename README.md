@@ -1,4 +1,5 @@
 ServiceMq
-=========
+=============
 
-A store and forward message queue for .NET.
+Easy store and forward message queue library for .NET.
+
