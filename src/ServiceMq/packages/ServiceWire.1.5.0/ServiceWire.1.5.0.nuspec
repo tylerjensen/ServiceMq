@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>ServiceWire</id>
+    <version>1.5.0</version>
+    <title>ServiceWire</title>
+    <authors>Tyler Jensen</authors>
+    <owners>Tyler Jensen</owners>
+    <licenseUrl>http://www.apache.org/licenses/LICENSE-2.0</licenseUrl>
+    <projectUrl>https://github.com/duovia/ServiceWire</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>ServiceWire is a very fast and light weight service host and dynamic client library that simplifies the development and use of high performance remote procedure call (RPC) communication between .NET processes over Named Pipes or TCP/IP.</description>
+    <releaseNotes>First release under new name. Renamed from DuoVia.Net.</releaseNotes>
+    <copyright>Copyright 2013-2014 Duovia Inc.</copyright>
+    <language />
+    <tags>Services Host Client NamedPipes TCP Messaging RPC Interception</tags>
+  </metadata>
+</package>
