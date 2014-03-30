@@ -226,16 +226,16 @@ namespace ServiceMq
                     var token = tokenSource.Token;
                     var task = Task.Factory.StartNew(() =>
                     {
-                        tcpClient = new TcpClient<IMessageService>(new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port));
-                        if (token.IsCancellationRequested)
+                        try
                         {
-                            try
+                            tcpClient = new TcpClient<IMessageService>(new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port));
+                            if (token.IsCancellationRequested)
                             {
-                                tcpClient.Dispose();
-                                tcpClient = null;
+                                    tcpClient.Dispose();
+                                    tcpClient = null;
                             }
-                            catch{}
                         }
+                        catch { }
                     }, token);
 
                     //force a timeout exception if not connected in 250ms
