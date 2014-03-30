@@ -11,6 +11,7 @@ namespace ServiceMq
         public Address From { get; set; }
         public DateTime Sent { get; set; }
         public DateTime Received { get; set; }
+        public int SendAttempt { get; set; }
         public string MessageTypeName { get; set; }
         public byte[] MessageBytes { get; set; }
         public string MessageString { get; set; }

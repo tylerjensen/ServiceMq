@@ -22,6 +22,20 @@ namespace ServiceMq
             return string.Format("{0},{1},{2},{3},{4}", ServerName, PipeName, IpAddress, Port, Transport);
         }
 
+        public string ToFileNameString()
+        {
+            //010-042-024-155-08746-pipename
+            switch (Transport)
+            {
+                case Transport.Np:
+                    return string.Format("{0}", PipeName);
+                case Transport.Tcp:
+                    return string.Format("{0}-{1}", IpAddress.Replace(".", "-"), Port);
+                default:
+                    return string.Format("{0}-{1}-{2}", IpAddress.Replace(".", "-"), Port, PipeName);
+            }
+        }
+
         public static Address FromString(string addr)
         {
             var parts = addr.Split(',');

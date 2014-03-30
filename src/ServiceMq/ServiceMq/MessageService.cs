@@ -7,8 +7,8 @@ namespace ServiceMq
 {
     internal interface IMessageService
     {
-        int EnqueueMessage(Guid id, string from, DateTime sentTime, string messageTypeName, string message);
-        int EnqueueMessage(Guid id, string from, DateTime sentTime, string messageTypeName, byte[] message);
+        int EnqueueMessage(Guid id, string from, DateTime sentTime, int sendAttempt, string messageTypeName, string message);
+        int EnqueueMessage(Guid id, string from, DateTime sentTime, int sendAttempt, string messageTypeName, byte[] message);
     }
 
     internal class MessageService : IMessageService
@@ -20,7 +20,7 @@ namespace ServiceMq
             this.inboundQueue = inboundQueue;
         }
 
-        public int EnqueueMessage(Guid id, string from, DateTime sentTime, string messageTypeName, string message)
+        public int EnqueueMessage(Guid id, string from, DateTime sentTime, int sendAttempt, string messageTypeName, string message)
         {
             if (string.IsNullOrWhiteSpace(message)) return 0;
             var msg = new Message
@@ -29,6 +29,7 @@ namespace ServiceMq
                 From = Address.FromString(from),
                 Sent = sentTime,
                 Received = DateTime.Now,
+                SendAttempt = sendAttempt,
                 MessageTypeName = messageTypeName,
                 MessageString = message
             };
@@ -36,7 +37,7 @@ namespace ServiceMq
             return message.Length;
         }
 
-        public int EnqueueMessage(Guid id, string from, DateTime sentTime, string messageTypeName, byte[] message)
+        public int EnqueueMessage(Guid id, string from, DateTime sentTime, int sendAttempt, string messageTypeName, byte[] message)
         {
             if (null == message || message.Length == 0) return 0;
             var msg = new Message
@@ -45,6 +46,7 @@ namespace ServiceMq
                 From = Address.FromString(from),
                 Sent = sentTime,
                 Received = DateTime.Now,
+                SendAttempt = sendAttempt,
                 MessageTypeName = messageTypeName,
                 MessageBytes = message
             };
