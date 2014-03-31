@@ -9,7 +9,7 @@ namespace ServiceMq
 {
     internal class OutboundMessage
     {
-        private const string DtFormat = "yyyyMMddhhmmssfff";
+        private const string DtFormat = "yyyyMMddHHmmssfff";
 
         public string Filename { get; set; }
         public Guid Id { get; set; }

@@ -113,9 +113,9 @@ namespace ServiceMq
         } 
 
 
-        public Message Receive(int timeout = 0)
+        public Message Receive(int timeoutMs = -1)
         {
-            return this.inboundQueue.Receive(timeout);
+            return this.inboundQueue.Receive(timeoutMs);
         }
 
 

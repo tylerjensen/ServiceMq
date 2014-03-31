@@ -15,7 +15,7 @@ namespace ServiceMq
 {
     internal class OutboundQueue
     {
-        private const string DtFormat = "yyyyMMddhhmmssfff";
+        private const string DtFormat = "yyyyMMddHHmmssfff";
 
         private readonly Queue<OutboundMessage> mq = new Queue<OutboundMessage>();
         private readonly Dictionary<string, Queue<OutboundMessage>> retryQueues = new Dictionary<string, Queue<OutboundMessage>>();
@@ -69,7 +69,7 @@ namespace ServiceMq
             lock (mq)
             {
                 //write to q file for that address
-                //yyyyMMddhhmmssfff-16bit-from-to-ipport-or-pipename
+                //yyyyMMddHHmmssfff-16bit-from-to-ipport-or-pipename
                 //20140324142165412-0415-010-042-024-155-08746-pipename.omq
 
                 var fileName = string.Format("{0}-{1}-{2}.omq", 
@@ -268,7 +268,7 @@ namespace ServiceMq
             }
         }
 
-        private const string DtLogFormat = "yyyyMMdd-hh";
+        private const string DtLogFormat = "yyyyMMdd-HH";
 
         private void LogFailed(OutboundMessage message)
         {
