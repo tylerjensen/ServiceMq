@@ -268,14 +268,24 @@ namespace ServiceMq
             }
         }
 
+        private const string DtLogFormat = "yyyyMMdd-hh";
+
         private void LogFailed(OutboundMessage message)
         {
-            throw new NotImplementedException();
+            var fileName = string.Format("fail-{0}.log", DateTime.Now.ToString(DtLogFormat));
+            var logFile = Path.Combine(this.failDir, fileName);
+            var line = message.ToLine();
+            File.AppendAllLines(logFile, new string[] { line });
+            File.Delete(message.Filename);
         }
 
         private void LogSent(OutboundMessage message)
         {
-            throw new NotImplementedException();
+            var fileName = string.Format("sent-{0}.log", DateTime.Now.ToString(DtLogFormat));
+            var logFile = Path.Combine(this.sentDir, fileName);
+            var line = message.ToLine();
+            File.AppendAllLines(logFile, new string[] { line });
+            File.Delete(message.Filename);
         }
     }
 }
