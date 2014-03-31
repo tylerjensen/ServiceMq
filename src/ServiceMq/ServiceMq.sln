@@ -12,6 +12,13 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".nuget", ".nuget", "{7D81ED
 		.nuget\NuGet.targets = .nuget\NuGet.targets
 	EndProjectSection
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServiceMq.Tests", "ServiceMq.Tests\ServiceMq.Tests.csproj", "{E2765137-D4F0-4CDA-A458-691F7BF10C9B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{195DE616-60EF-4AAB-A45F-1AA02FA99F4F}"
+	ProjectSection(SolutionItems) = preProject
+		TestSettingsLocal.testsettings = TestSettingsLocal.testsettings
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -22,6 +29,10 @@ Global
 		{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -160,6 +160,9 @@ namespace ServiceMq
                 if (disposing)
                 {
                     //cleanup here
+                    this.outboundQueue.Stop();
+                    if (null != npHost) npHost.Dispose();
+                    if (null != tcpHost) tcpHost.Dispose();
                 }
             }
         }

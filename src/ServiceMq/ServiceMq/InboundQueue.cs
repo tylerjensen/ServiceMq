@@ -24,6 +24,8 @@ namespace ServiceMq
             this.msgDir = msgDir;
             this.inDir = Path.Combine(msgDir, "in");
             this.readDir = Path.Combine(msgDir, "read");
+            Directory.CreateDirectory(this.inDir);
+            Directory.CreateDirectory(this.readDir);
 
             //read from in to hydrate queue
             var list = new List<string>(Directory.GetFiles(this.inDir, "*.imq"));

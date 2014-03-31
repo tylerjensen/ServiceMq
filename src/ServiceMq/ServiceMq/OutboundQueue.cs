@@ -252,12 +252,12 @@ namespace ServiceMq
 
                 if (null == message.MessageBytes)
                 {
-                    proxy.EnqueueMessage(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
+                    proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
                          message.MessageTypeName, message.MessageString);
                 }
                 else
                 {
-                    proxy.EnqueueMessage(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
+                    proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
                         message.MessageTypeName, message.MessageBytes);
                 }
             }
