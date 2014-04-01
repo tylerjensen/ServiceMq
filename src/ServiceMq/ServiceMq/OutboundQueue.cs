@@ -28,6 +28,7 @@ namespace ServiceMq
         private ushort tcount = 0;
         private volatile bool continueProcessing = true;
         private ManualResetEvent outgoingMessageWaitHandle = new ManualResetEvent(false);
+        private readonly Timer timer = null;
 
         public OutboundQueue(string name, string msgDir)
         {
@@ -55,6 +56,14 @@ namespace ServiceMq
                 }
                 outgoingMessageWaitHandle.Set();
             }
+
+            //fire send loop every two seconds to prevent failing messages from hanging up
+            this.timer = new Timer(SpinSending, null, 2000, 2000);
+        }
+
+        private void SpinSending(object state)
+        {
+            outgoingMessageWaitHandle.Set();
         }
 
         public void Stop()
@@ -62,6 +71,7 @@ namespace ServiceMq
             continueProcessing = false;
             outgoingMessageWaitHandle.Set();
             outgoingMessageWaitHandle.Dispose();
+            timer.Dispose();
         }
 
         public void Enqueue(OutboundMessage msg)
@@ -107,17 +117,11 @@ namespace ServiceMq
                         //attempt to prevent excessive memory footprint
                         if (mq.Count > 1000) mq.TrimExcess();
                     }
-                    else
-                    {
-                        //set to nonsignaled and block on WaitOne again
-                        outgoingMessageWaitHandle.Reset();
-                    }
                 }
                 var attemptTime = DateTime.Now;
                 bool fromRegularQueue = true;
-                if (null == message)
+                if (null == message)  //look for oldest in retry queues
                 {
-                    //look for oldest in retry queues
                     var keyWithOldest = string.Empty;
                     var oldest = DateTime.Now;
                     foreach (var kvp in retryQueues)
@@ -144,10 +148,17 @@ namespace ServiceMq
                     }
                 }
 
-                if (null != message)
+                if (null == message)
                 {
-                    //check to see if this message is being sent to an address that is failing
+                    //set to nonsignaled and block on WaitOne again
+                    outgoingMessageWaitHandle.Reset();
+                }
+                else 
+                {
+                    //process the message
                     var dest = message.To.ToFileNameString();
+
+                    //check to see if this regular queue message is being sent to an address that is failing
                     if (fromRegularQueue && retryQueues.ContainsKey(dest) && retryQueues[dest].Count > 0)
                     {
                         //put regular mq msg onto retry queue to preserve order to that address

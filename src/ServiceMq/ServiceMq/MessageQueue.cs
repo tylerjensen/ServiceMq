@@ -64,11 +64,11 @@ namespace ServiceMq
             return SendMsg(msg, typeof(T).FullName, addr);
         }
 
-        public Guid Send(Address dest, string message)
-        {
-            var addr = GetOptimalAddress(dest);
-            return SendMsg(message, typeof(string).FullName, addr);
-        }
+        //public Guid Send(Address dest, string message)
+        //{
+        //    var addr = GetOptimalAddress(dest);
+        //    return SendMsg(message, typeof(string).FullName, addr);
+        //}
 
         public Guid Send(Address dest, string messageType, string message)
         {
@@ -76,7 +76,7 @@ namespace ServiceMq
             return SendMsg(message, messageType, addr);
         }
 
-        public Guid Send(Address dest, byte[] message, string messageType)
+        public Guid SendBytes(Address dest, byte[] message, string messageType)
         {
             var addr = GetOptimalAddress(dest);
             return SendMsg(message, messageType, addr);
