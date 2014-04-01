@@ -70,7 +70,15 @@ namespace ServiceMq
             }
         }
 
-        public Message Receive(int timeoutMs)
+        public void ReEnqueue(Message message)
+        {
+            lock (mq)
+            {
+                mq.Enqueue(message);
+            }
+        }
+
+        public Message Receive(int timeoutMs, bool logRead = true)
         {
             while (true)
             {
@@ -94,7 +102,7 @@ namespace ServiceMq
 
                     if (null != message)
                     {
-                        LogRead(message);
+                        if (logRead) LogRead(message);
                         return message;
                     }
                 }
@@ -115,6 +123,11 @@ namespace ServiceMq
             var line = message.ToLine();
             File.AppendAllLines(logFile, new string[] { line });
             File.Delete(message.Filename);
+        }
+
+        public void Acknowledge(Message message)
+        {
+            LogRead(message);
         }
     }
 }

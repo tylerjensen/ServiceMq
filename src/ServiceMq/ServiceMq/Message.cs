@@ -11,7 +11,7 @@ namespace ServiceMq
     {
         private const string DtFormat = "yyyyMMddHHmmssfff";
 
-        public string Filename { get; set; }
+        internal string Filename { get; set; }
         public Guid Id { get; set; }
         public Address From { get; set; }
         public DateTime Sent { get; set; }

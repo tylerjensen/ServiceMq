@@ -64,12 +64,6 @@ namespace ServiceMq
             return SendMsg(msg, typeof(T).FullName, addr);
         }
 
-        //public Guid Send(Address dest, string message)
-        //{
-        //    var addr = GetOptimalAddress(dest);
-        //    return SendMsg(message, typeof(string).FullName, addr);
-        //}
-
         public Guid Send(Address dest, string messageType, string message)
         {
             var addr = GetOptimalAddress(dest);
@@ -112,12 +106,48 @@ namespace ServiceMq
             return message.Id;
         } 
 
-
+        /// <summary>
+        /// Get one message in order received and removes it from the inbox and logs it to the read log. 
+        /// Blocking if timeoutMs = -1.
+        /// </summary>
+        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
+        /// <returns></returns>
         public Message Receive(int timeoutMs = -1)
         {
             return this.inboundQueue.Receive(timeoutMs);
         }
 
+        /// <summary>
+        /// Get one message in order received without removing it from the inbox. Blocking if timeoutMs = -1.
+        /// If Acknowledge is not called, the message will remain in the inbox and be queued again when
+        /// the MessageQueue is next constructed.
+        /// </summary>
+        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
+        /// <returns></returns>
+        public Message Accept(int timeoutMs = -1)
+        {
+            return this.inboundQueue.Receive(timeoutMs, logRead: false);
+        }
+
+        /// <summary>
+        /// Signal message handled to be deleted from inbox and logged to read log.
+        /// </summary>
+        /// <param name="message"></param>
+        public void Acknowledge(Message message)
+        {
+            this.inboundQueue.Acknowledge(message);
+        }
+
+        /// <summary>
+        /// Signal message could not be handled at this time. Adds it back into the 
+        /// in-process queue out of order. This allows reprocessing after processing
+        /// the current queued messages.
+        /// </summary>
+        /// <param name="message"></param>
+        public void ReEnqueue(Message message)
+        {
+            this.inboundQueue.ReEnqueue(message);
+        }
 
         private Address GetOptimalAddress(Address dest)
         {
