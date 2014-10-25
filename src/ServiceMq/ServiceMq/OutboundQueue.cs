@@ -108,6 +108,7 @@ namespace ServiceMq
             while (continueProcessing)
             {
                 outgoingMessageWaitHandle.WaitOne();
+                if (!continueProcessing) break;
                 OutboundMessage message = null;
                 lock (mq)
                 {
@@ -279,13 +280,13 @@ namespace ServiceMq
             }
         }
 
-        private const string DtLogFormat = "yyyyMMdd-HH";
+        private const string DtLogFormat = "yyyyMMdd-HH-mm";
 
         private void LogFailed(OutboundMessage message)
         {
             var fileName = string.Format("fail-{0}.log", DateTime.Now.ToString(DtLogFormat));
             var logFile = Path.Combine(this.failDir, fileName);
-            var line = message.ToLine();
+            var line = message.ToLine().ToFlatLine();
             File.AppendAllLines(logFile, new string[] { line });
             File.Delete(message.Filename);
         }
@@ -294,7 +295,7 @@ namespace ServiceMq
         {
             var fileName = string.Format("sent-{0}.log", DateTime.Now.ToString(DtLogFormat));
             var logFile = Path.Combine(this.sentDir, fileName);
-            var line = message.ToLine();
+            var line = message.ToLine().ToFlatLine();
             File.AppendAllLines(logFile, new string[] { line });
             File.Delete(message.Filename);
         }

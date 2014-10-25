@@ -104,6 +104,78 @@ namespace ServiceMq
             };
             this.outboundQueue.Enqueue(message);
             return message.Id;
+        }
+
+
+        public Guid Broadcast<T>(IEnumerable<Address> dests, T message)
+        {
+            var addrs = new List<Address>();
+            foreach(var dAddr in dests)
+            {
+                addrs.Add(GetOptimalAddress(dAddr));
+            }
+            string msg = SvcStkTxt.TypeSerializer.SerializeToString(message);
+            return BroadcastMsg(msg, typeof(T).FullName, addrs);
+        }
+
+        public Guid Broadcast(IEnumerable<Address> dests, string messageType, string message)
+        {
+            var addrs = new List<Address>();
+            foreach (var dAddr in dests)
+            {
+                addrs.Add(GetOptimalAddress(dAddr));
+            }
+            return BroadcastMsg(message, messageType, addrs);
+        }
+
+        public Guid BroadcastBytes(IEnumerable<Address> dests, byte[] message, string messageType)
+        {
+            var addrs = new List<Address>();
+            foreach (var dAddr in dests)
+            {
+                addrs.Add(GetOptimalAddress(dAddr));
+            }
+            return BroadcastMsg(message, messageType, addrs);
+        }
+
+        private Guid BroadcastMsg(string msg, string messageType, IEnumerable<Address> dests)
+        {
+            var id = Guid.NewGuid();
+            var now = DateTime.Now;
+            foreach (var dest in dests)
+            {
+                var message = new OutboundMessage()
+                {
+                    From = this.address,
+                    To = dest,
+                    Id = id,
+                    MessageString = msg,
+                    MessageTypeName = messageType,
+                    Sent = now
+                };
+                this.outboundQueue.Enqueue(message);
+            }
+            return id;
+        }
+
+        private Guid BroadcastMsg(byte[] msg, string messageType, IEnumerable<Address> dests)
+        {
+            var id = Guid.NewGuid();
+            var now = DateTime.Now;
+            foreach (var dest in dests)
+            {
+                var message = new OutboundMessage()
+                {
+                    From = this.address,
+                    To = dest,
+                    Id = Guid.NewGuid(),
+                    MessageBytes = msg,
+                    MessageTypeName = messageType,
+                    Sent = DateTime.Now
+                };
+                this.outboundQueue.Enqueue(message);
+            }
+            return id;
         } 
 
         /// <summary>
@@ -191,6 +263,7 @@ namespace ServiceMq
                 {
                     //cleanup here
                     this.outboundQueue.Stop();
+                    this.inboundQueue.Stop();
                     if (null != npHost) npHost.Dispose();
                     if (null != tcpHost) tcpHost.Dispose();
                 }

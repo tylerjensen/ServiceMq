@@ -47,6 +47,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Address.cs" />
+    <Compile Include="Extensions.cs" />
     <Compile Include="OutboundQueue.cs" />
     <Compile Include="InboundQueue.cs" />
     <Compile Include="OutboundMessage.cs" />

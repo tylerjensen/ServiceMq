@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace ServiceMq
 {
-    internal class InboundQueue
+    internal class InboundQueue 
     {
         private const string DtFormat = "yyyyMMddHHmmssfff";
         private readonly Queue<Message> mq = new Queue<Message>();
@@ -15,6 +15,7 @@ namespace ServiceMq
         private readonly string inDir;
         private readonly string readDir;
         private readonly string name;
+        private volatile bool continueProcessing = true;
         private ManualResetEvent incomingMessageWaitHandle = new ManualResetEvent(false);
         private ushort tcount = 0;
 
@@ -39,6 +40,13 @@ namespace ServiceMq
                 }
                 incomingMessageWaitHandle.Set();
             }
+        }
+
+        public void Stop()
+        {
+            continueProcessing = false;
+            incomingMessageWaitHandle.Set();
+            incomingMessageWaitHandle.Dispose();
         }
 
         public void Enqueue(Message msg)
@@ -66,7 +74,7 @@ namespace ServiceMq
                 tcount = (tcount > 9999) ? (ushort)0 : (ushort)(tcount + 1);
 
                 //signal received
-                incomingMessageWaitHandle.Set();
+                if (continueProcessing) incomingMessageWaitHandle.Set();
             }
         }
 
@@ -80,10 +88,11 @@ namespace ServiceMq
 
         public Message Receive(int timeoutMs, bool logRead = true)
         {
-            while (true)
+            while (continueProcessing)
             {
                 if (incomingMessageWaitHandle.WaitOne(timeoutMs))
                 {
+                    if (!continueProcessing) break;
                     Message message = null;
                     lock (mq)
                     {
@@ -114,13 +123,13 @@ namespace ServiceMq
             return null;
         }
 
-        private const string DtLogFormat = "yyyyMMdd-HH";
+        private const string DtLogFormat = "yyyyMMdd-HH-mm";
 
         private void LogRead(Message message)
         {
             var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
             var logFile = Path.Combine(this.readDir, fileName);
-            var line = message.ToLine();
+            var line = message.ToLine().ToFlatLine();
             File.AppendAllLines(logFile, new string[] { line });
             File.Delete(message.Filename);
         }
