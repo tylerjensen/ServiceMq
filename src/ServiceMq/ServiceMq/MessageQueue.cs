@@ -25,7 +25,14 @@ namespace ServiceMq
         private readonly NpHost npHost = null;
         private readonly TcpHost tcpHost = null;
 
-        public MessageQueue(string name, Address address, string msgDir = null, ILog log = null, IStats stats = null)
+        private Exception stateExceptionOutbound = null;
+        private QueueState stateOutbound = QueueState.Running;
+        private Exception stateExceptionInbound = null;
+        private QueueState stateInbound = QueueState.Running;
+
+        public MessageQueue(string name, Address address, 
+            string msgDir = null, ILog log = null, IStats stats = null,
+            double hoursReadSentLogsToLive = 48.0)
         {
             this.name = name;
             this.address = address;
@@ -33,8 +40,8 @@ namespace ServiceMq
             Directory.CreateDirectory(this.msgDir);
 
             //create inbound and outbound queues
-            this.outboundQueue = new OutboundQueue(this.name, this.msgDir);
-            this.inboundQueue = new InboundQueue(this.name, this.msgDir);
+            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, hoursReadSentLogsToLive);
+            this.inboundQueue = new InboundQueue(this.name, this.msgDir, hoursReadSentLogsToLive);
 
             //create message service singleton
             this.messageService = new MessageService(this.inboundQueue);
@@ -55,6 +62,17 @@ namespace ServiceMq
                 this.npHost.AddService<IMessageService>(this.messageService);
                 this.npHost.Open();
             }
+        }
+
+        public Exception StateExceptionOutbound { get { return stateExceptionOutbound; } }
+        public QueueState StateOutbound { get { return stateOutbound; } }
+        public Exception StateExceptionInbound { get { return stateExceptionInbound; } }
+        public QueueState StateInbound { get { return stateInbound; } }
+
+        public void ClearState()
+        {
+            this.inboundQueue.ClearState();
+            this.outboundQueue.ClearState();
         }
 
         public Guid Send<T>(Address dest, T message)
@@ -78,6 +96,11 @@ namespace ServiceMq
 
         private Guid SendMsg(string msg, string messageType, Address dest)
         {
+            if (this.outboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Outbound queue exception state. See inner exception.", 
+                    this.outboundQueue.StateException);
+            }
             var message = new OutboundMessage()
             {
                 From = this.address,
@@ -93,6 +116,11 @@ namespace ServiceMq
 
         private Guid SendMsg(byte[] msg, string messageType, Address dest)
         {
+            if (this.outboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Outbound queue exception state. See inner exception.", 
+                    this.outboundQueue.StateException);
+            }
             var message = new OutboundMessage()
             {
                 From = this.address,
@@ -105,7 +133,6 @@ namespace ServiceMq
             this.outboundQueue.Enqueue(message);
             return message.Id;
         }
-
 
         public Guid Broadcast<T>(IEnumerable<Address> dests, T message)
         {
@@ -140,6 +167,11 @@ namespace ServiceMq
 
         private Guid BroadcastMsg(string msg, string messageType, IEnumerable<Address> dests)
         {
+            if (this.outboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Outbound queue exception state. See inner exception.", 
+                    this.outboundQueue.StateException);
+            }
             var id = Guid.NewGuid();
             var now = DateTime.Now;
             foreach (var dest in dests)
@@ -160,6 +192,11 @@ namespace ServiceMq
 
         private Guid BroadcastMsg(byte[] msg, string messageType, IEnumerable<Address> dests)
         {
+            if (this.outboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Outbound queue exception state. See inner exception.", 
+                    this.outboundQueue.StateException);
+            }
             var id = Guid.NewGuid();
             var now = DateTime.Now;
             foreach (var dest in dests)
@@ -186,6 +223,11 @@ namespace ServiceMq
         /// <returns></returns>
         public Message Receive(int timeoutMs = -1)
         {
+            if (this.inboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Inbound queue exception state. See inner exception.", 
+                    this.inboundQueue.StateException);
+            }
             return this.inboundQueue.Receive(timeoutMs);
         }
 
@@ -198,6 +240,11 @@ namespace ServiceMq
         /// <returns></returns>
         public Message Accept(int timeoutMs = -1)
         {
+            if (this.inboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Inbound queue exception state. See inner exception.", 
+                    this.inboundQueue.StateException);
+            }
             return this.inboundQueue.Receive(timeoutMs, logRead: false);
         }
 
@@ -207,6 +254,11 @@ namespace ServiceMq
         /// <param name="message"></param>
         public void Acknowledge(Message message)
         {
+            if (this.inboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Inbound queue exception state. See inner exception.", 
+                    this.inboundQueue.StateException);
+            }
             this.inboundQueue.Acknowledge(message);
         }
 
@@ -218,6 +270,11 @@ namespace ServiceMq
         /// <param name="message"></param>
         public void ReEnqueue(Message message)
         {
+            if (this.inboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Inbound queue exception state. See inner exception.", 
+                    this.inboundQueue.StateException);
+            }
             this.inboundQueue.ReEnqueue(message);
         }
 

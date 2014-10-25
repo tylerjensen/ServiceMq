@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ServiceMq
 {
@@ -15,38 +16,77 @@ namespace ServiceMq
         private readonly string inDir;
         private readonly string readDir;
         private readonly string name;
+        private readonly double hoursReadSentLogsToLive;
         private volatile bool continueProcessing = true;
         private ManualResetEvent incomingMessageWaitHandle = new ManualResetEvent(false);
         private ushort tcount = 0;
+        private DateTime lastCleaned = DateTime.Now.AddDays(-10);
+        private Exception stateException = null;
+        private QueueState state = QueueState.Running;
 
-        public InboundQueue(string name, string msgDir)
+        public InboundQueue(string name, string msgDir, double hoursReadSentLogsToLive)
         {
             this.name = name;
             this.msgDir = msgDir;
+            this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
             this.inDir = Path.Combine(msgDir, "in");
             this.readDir = Path.Combine(msgDir, "read");
             Directory.CreateDirectory(this.inDir);
             Directory.CreateDirectory(this.readDir);
 
-            //read from in to hydrate queue
-            var list = new List<string>(Directory.GetFiles(this.inDir, "*.imq"));
-            if (list.Count > 0)
+            try
             {
-                list.Sort();
-                foreach (var msgFile in list)
+                //read from in to hydrate queue
+                var list = new List<string>(Directory.GetFiles(this.inDir, "*.imq"));
+                if (list.Count > 0)
                 {
-                    var msg = Message.ReadFromFile(msgFile);
-                    if (null != msg) mq.Enqueue(msg);
+                    list.Sort();
+                    foreach (var msgFile in list)
+                    {
+                        var msg = Message.ReadFromFile(msgFile);
+                        if (null != msg) mq.Enqueue(msg);
+                    }
+                    incomingMessageWaitHandle.Set();
                 }
-                incomingMessageWaitHandle.Set();
             }
+            catch (Exception e)
+            {
+                this.stateException = e;
+                this.state = QueueState.Failed;
+                throw;
+            }
+        }
+
+        public Exception StateException
+        {
+            get { return stateException; }
+        }
+
+        public QueueState State
+        {
+            get { return state; }
+        }
+
+        public void ClearState()
+        {
+            stateException = null;
+            state = QueueState.Running;
         }
 
         public void Stop()
         {
-            continueProcessing = false;
-            incomingMessageWaitHandle.Set();
-            incomingMessageWaitHandle.Dispose();
+            try
+            {
+                continueProcessing = false;
+                incomingMessageWaitHandle.Set();
+                incomingMessageWaitHandle.Dispose();
+            }
+            catch (Exception e)
+            {
+                this.stateException = e;
+                this.state = QueueState.Failed;
+                throw;
+            }
         }
 
         public void Enqueue(Message msg)
@@ -127,11 +167,45 @@ namespace ServiceMq
 
         private void LogRead(Message message)
         {
-            var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
-            var logFile = Path.Combine(this.readDir, fileName);
-            var line = message.ToLine().ToFlatLine();
-            File.AppendAllLines(logFile, new string[] { line });
-            File.Delete(message.Filename);
+            try
+            {
+                var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
+                var logFile = Path.Combine(this.readDir, fileName);
+                var line = message.ToLine().ToFlatLine();
+                File.AppendAllLines(logFile, new string[] { line });
+                File.Delete(message.Filename);
+            }
+            catch (Exception e)
+            {
+                this.stateException = e;
+                this.state = QueueState.Cautioned;
+            }
+
+            //cleanup every two hours
+            if ((DateTime.Now - lastCleaned).TotalHours > 2.0)
+            {
+                lastCleaned = DateTime.Now;
+                Task.Factory.StartNew(() =>
+                {
+                    try
+                    {
+                        var files = Directory.GetFiles(this.readDir);
+                        foreach (var file in files)
+                        {
+                            var info = new FileInfo(file);
+                            if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
+                            {
+                                File.Delete(file);
+                            }
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        this.stateException = e;
+                        this.state = QueueState.Cautioned;
+                    }
+                }, TaskCreationOptions.LongRunning);
+            }
         }
 
         public void Acknowledge(Message message)
