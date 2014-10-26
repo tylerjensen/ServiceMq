@@ -64,6 +64,22 @@ namespace ServiceMq
             }
         }
 
+        public long CountOutbound
+        {
+            get
+            {
+                return outboundQueue.Count;
+            }
+        }
+
+        public int CountInbound
+        {
+            get
+            {
+                return inboundQueue.Count;
+            }
+        }
+
         public Exception StateExceptionOutbound { get { return stateExceptionOutbound; } }
         public QueueState StateOutbound { get { return stateOutbound; } }
         public Exception StateExceptionInbound { get { return stateExceptionInbound; } }

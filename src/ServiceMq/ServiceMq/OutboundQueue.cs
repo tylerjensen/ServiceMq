@@ -82,6 +82,23 @@ namespace ServiceMq
             this.timer = new Timer(SpinSending, null, 2000, 2000);
         }
 
+        public long Count
+        {
+            get
+            {
+                long count = 0;
+                lock (mq)
+                {
+                    count = mq.Count;
+                }
+                lock (retryQueues)
+                {
+                    foreach (var kvp in retryQueues) count += kvp.Value.Count;
+                    return count;
+                }
+            }
+        }
+
         public Exception StateException
         {
             get { return stateException; }
@@ -181,27 +198,30 @@ namespace ServiceMq
                     {
                         var keyWithOldest = string.Empty;
                         var oldest = DateTime.Now;
-                        foreach (var kvp in retryQueues)
+                        lock (retryQueues)
                         {
-                            if (kvp.Value.Count > 0)
+                            foreach (var kvp in retryQueues)
                             {
-                                var peekMsg = kvp.Value.Peek();
-                                if (peekMsg.LastSendAttempt < oldest)
+                                if (kvp.Value.Count > 0)
                                 {
-                                    //only choosee if it is a viable retry candidate
-                                    var secondsSinceLast = (attemptTime - peekMsg.LastSendAttempt).TotalSeconds;
-                                    if (peekMsg.SendAttempts < secondsSinceLast)
+                                    var peekMsg = kvp.Value.Peek();
+                                    if (peekMsg.LastSendAttempt < oldest)
                                     {
-                                        oldest = peekMsg.LastSendAttempt;
-                                        keyWithOldest = kvp.Key;
+                                        //only choosee if it is a viable retry candidate
+                                        var secondsSinceLast = (attemptTime - peekMsg.LastSendAttempt).TotalSeconds;
+                                        if (peekMsg.SendAttempts < secondsSinceLast)
+                                        {
+                                            oldest = peekMsg.LastSendAttempt;
+                                            keyWithOldest = kvp.Key;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        if (keyWithOldest != string.Empty)
-                        {
-                            message = retryQueues[keyWithOldest].Dequeue();
-                            fromRegularQueue = false;
+                            if (keyWithOldest != string.Empty)
+                            {
+                                message = retryQueues[keyWithOldest].Dequeue();
+                                fromRegularQueue = false;
+                            }
                         }
                     }
 
@@ -214,50 +234,52 @@ namespace ServiceMq
                     {
                         //process the message
                         var dest = message.To.ToFileNameString();
-
-                        //check to see if this regular queue message is being sent to an address that is failing
-                        if (fromRegularQueue && retryQueues.ContainsKey(dest) && retryQueues[dest].Count > 0)
+                        lock (retryQueues)
                         {
-                            //put regular mq msg onto retry queue to preserve order to that address
-                            retryQueues[dest].Enqueue(message);
+                            //check to see if this regular queue message is being sent to an address that is failing
+                            if (fromRegularQueue && retryQueues.ContainsKey(dest) && retryQueues[dest].Count > 0)
+                            {
+                                //put regular mq msg onto retry queue to preserve order to that address
+                                retryQueues[dest].Enqueue(message);
 
-                            //set message to null and get oldest if it is time to retry - 
-                            message = null;
-                            var peekOld = retryQueues[dest].Peek();
-                            //should attempt if diff is more than send attempts in seconds
-                            var peekSeconds = (attemptTime - peekOld.LastSendAttempt).TotalSeconds;
-                            if (peekOld.SendAttempts < peekSeconds)
-                            {
-                                message = peekOld;
-                                fromRegularQueue = false;
-                            }
-                        }
-
-                        //skip if message went onto failure heap
-                        if (null != message)
-                        {
-                            //if attempts exceed X or time since sent, add to fail
-                            message.LastSendAttempt = attemptTime;
-                            message.SendAttempts++;
-                            try
-                            {
-                                SendMessage(message);
-                                LogSent(message);
-                                if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off as success
-                            }
-                            catch (Exception e)
-                            {
-                                if ((message.LastSendAttempt - message.Sent).TotalHours > 24.0)
+                                //set message to null and get oldest if it is time to retry - 
+                                message = null;
+                                var peekOld = retryQueues[dest].Peek();
+                                //should attempt if diff is more than send attempts in seconds
+                                var peekSeconds = (attemptTime - peekOld.LastSendAttempt).TotalSeconds;
+                                if (peekOld.SendAttempts < peekSeconds)
                                 {
-                                    LogFailed(message);
-                                    if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off no more trying
+                                    message = peekOld;
+                                    fromRegularQueue = false;
                                 }
-                                else
+                            }
+
+                            //skip if message went onto failure heap
+                            if (null != message)
+                            {
+                                //if attempts exceed X or time since sent, add to fail
+                                message.LastSendAttempt = attemptTime;
+                                message.SendAttempts++;
+                                try
                                 {
-                                    if (fromRegularQueue)
+                                    SendMessage(message);
+                                    LogSent(message);
+                                    if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off as success
+                                }
+                                catch (Exception e)
+                                {
+                                    if ((message.LastSendAttempt - message.Sent).TotalHours > 24.0)
                                     {
-                                        if (!retryQueues.ContainsKey(dest)) retryQueues.Add(dest, new Queue<OutboundMessage>());
-                                        retryQueues[dest].Enqueue(message);
+                                        LogFailed(message);
+                                        if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off no more trying
+                                    }
+                                    else
+                                    {
+                                        if (fromRegularQueue)
+                                        {
+                                            if (!retryQueues.ContainsKey(dest)) retryQueues.Add(dest, new Queue<OutboundMessage>());
+                                            retryQueues[dest].Enqueue(message);
+                                        }
                                     }
                                 }
                             }

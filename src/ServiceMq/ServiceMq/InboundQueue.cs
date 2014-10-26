@@ -57,6 +57,17 @@ namespace ServiceMq
             }
         }
 
+        public int Count
+        {
+            get
+            {
+                lock (mq)
+                {
+                    return mq.Count;
+                }
+            }
+        }
+
         public Exception StateException
         {
             get { return stateException; }
