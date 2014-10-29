@@ -79,5 +79,66 @@ namespace ServiceMq.Tests
                 Assert.AreEqual(msg3.Sent, msg4.Sent);
             }
         }
+
+        [TestMethod]
+        public void FlashDestDownTest()
+        {
+            var qfrom = new Address("qfFrom");
+            var q1Address = new Address("qf1pipe");
+            var q2Address = new Address("qf2pipe");
+            using (var q1 = new MessageQueue("qf1", q1Address, @"c:\temp\qf1"))
+            {
+                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
+                var msg = q1.Receive();
+                Assert.IsTrue(msg.Id == id);
+            }
+
+            using (var q2 = new MessageQueue("qf2", q2Address, @"c:\temp\qf2"))
+            {
+                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
+                var msg = q2.Receive();
+                Assert.IsTrue(msg.Id == id);
+            }
+
+            try
+            {
+                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
+            }
+            catch (Exception e)
+            {
+                Assert.IsTrue(e is System.Net.WebException);
+            }
+        }
+
+        [TestMethod]
+        public void FlashDestDownTcpTest()
+        {
+            var qfrom = new Address(Dns.GetHostName(), 8966);
+            var q1Address = new Address(Dns.GetHostName(), 8967);
+            var q2Address = new Address(Dns.GetHostName(), 8968);
+
+            using (var q1 = new MessageQueue("qf1", q1Address, @"c:\temp\qf1"))
+            {
+                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
+                var msg = q1.Receive();
+                Assert.IsTrue(msg.Id == id);
+            }
+
+            using (var q2 = new MessageQueue("qf2", q2Address, @"c:\temp\qf2"))
+            {
+                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
+                var msg = q2.Receive();
+                Assert.IsTrue(msg.Id == id);
+            }
+
+            try
+            {
+                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
+            }
+            catch (Exception e)
+            {
+                Assert.IsTrue(e is System.Net.WebException);
+            }
+        }
     }
 }
