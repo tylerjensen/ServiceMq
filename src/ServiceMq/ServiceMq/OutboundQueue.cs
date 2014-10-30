@@ -31,6 +31,7 @@ namespace ServiceMq
         private readonly string sentDir;
         private readonly string failDir;
         private readonly string name;
+        private readonly int connectTimeOutMs;
 
         private volatile bool continueProcessing = true;
         private ManualResetEvent outgoingMessageWaitHandle = new ManualResetEvent(false);
@@ -41,11 +42,12 @@ namespace ServiceMq
         private Exception stateException = null;
         private QueueState state = QueueState.Running;
 
-        public OutboundQueue(string name, string msgDir, double hoursReadSentLogsToLive)
+        public OutboundQueue(string name, string msgDir, double hoursReadSentLogsToLive, int connectTimeOutMs)
         {
             this.name = name;
             this.msgDir = msgDir;
             this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
+            this.connectTimeOutMs = connectTimeOutMs;
             this.outDir = Path.Combine(msgDir, "out");
             this.sentDir = Path.Combine(msgDir, "sent");
             this.failDir = Path.Combine(msgDir, "fail");
@@ -313,37 +315,15 @@ namespace ServiceMq
 
                 if (useNpClient)
                 {
-                    npClient = new NpClient<IMessageService>(new NpEndPoint(message.To.PipeName, 250));
+                    npClient = new NpClient<IMessageService>(new NpEndPoint(message.To.PipeName, connectTimeOutMs));
                     proxy = npClient.Proxy;
                 }
                 else
                 {
-                    var tokenSource = new CancellationTokenSource();
-                    var token = tokenSource.Token;
-                    var task = Task.Factory.StartNew(() =>
-                    {
-                        try
-                        {
-                            tcpClient = new TcpClient<IMessageService>(new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port));
-                            if (token.IsCancellationRequested)
-                            {
-                                    tcpClient.Dispose();
-                                    tcpClient = null;
-                            }
-                        }
-                        catch { }
-                    }, token);
-
-                    //force a timeout exception if not connected in 250ms
-                    if (Task.WaitAll(new Task[] {task}, 250, token))
-                    {
-                        proxy = tcpClient.Proxy;
-                    }
-                    else
-                    {
-                        tokenSource.Cancel();
-                        throw new TimeoutException("Could not connect in less than 250ms");
-                    }
+                    tcpClient = new TcpClient<IMessageService>(new TcpEndPoint(
+                        new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port), 
+                        connectTimeOutMs));
+                    proxy = tcpClient.Proxy;
                 }
 
                 if (null == message.MessageBytes)

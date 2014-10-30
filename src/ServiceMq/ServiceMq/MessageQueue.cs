@@ -24,6 +24,7 @@ namespace ServiceMq
         private readonly IMessageService messageService = null;
         private readonly NpHost npHost = null;
         private readonly TcpHost tcpHost = null;
+        private readonly int connectTimeOutMs = 500;
 
         private Exception stateExceptionOutbound = null;
         private QueueState stateOutbound = QueueState.Running;
@@ -32,15 +33,18 @@ namespace ServiceMq
 
         public MessageQueue(string name, Address address, 
             string msgDir = null, ILog log = null, IStats stats = null,
-            double hoursReadSentLogsToLive = 48.0)
+            double hoursReadSentLogsToLive = 48.0,
+            int connectTimeOutMs = 500)
         {
             this.name = name;
             this.address = address;
             this.msgDir = msgDir ?? GetExecutablePathDirectory();
             Directory.CreateDirectory(this.msgDir);
 
+            this.connectTimeOutMs = connectTimeOutMs;
+
             //create inbound and outbound queues
-            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, hoursReadSentLogsToLive);
+            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, hoursReadSentLogsToLive, connectTimeOutMs);
             this.inboundQueue = new InboundQueue(this.name, this.msgDir, hoursReadSentLogsToLive);
 
             //create message service singleton

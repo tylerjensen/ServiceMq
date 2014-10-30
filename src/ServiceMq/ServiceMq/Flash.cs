@@ -15,6 +15,13 @@ namespace ServiceMq
     /// </summary>
     public static class Flash
     {
+        private static int _connectTimeOutMs = 500;
+        public static int ConnectTimeOutMs 
+        { 
+            get { return _connectTimeOutMs; } 
+            set { Interlocked.Exchange(ref _connectTimeOutMs, value); } 
+        }
+
         public static Guid Send<T>(Address from, Address dest, T message, params Address[] altDests)
         {
             var addr = GetOptimalAddress(from, dest);
@@ -149,37 +156,15 @@ namespace ServiceMq
 
                 if (useNpClient)
                 {
-                    npClient = new NpClient<IMessageService>(new NpEndPoint(message.To.PipeName, 250));
+                    npClient = new NpClient<IMessageService>(new NpEndPoint(message.To.PipeName, _connectTimeOutMs));
                     proxy = npClient.Proxy;
                 }
                 else
                 {
-                    var tokenSource = new CancellationTokenSource();
-                    var token = tokenSource.Token;
-                    var task = Task.Factory.StartNew(() =>
-                    {
-                        try
-                        {
-                            tcpClient = new TcpClient<IMessageService>(new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port));
-                            if (token.IsCancellationRequested)
-                            {
-                                tcpClient.Dispose();
-                                tcpClient = null;
-                            }
-                        }
-                        catch { }
-                    }, token);
-
-                    //force a timeout exception if not connected in 250ms
-                    if (Task.WaitAll(new Task[] { task }, 250, token))
-                    {
-                        proxy = tcpClient.Proxy;
-                    }
-                    else
-                    {
-                        tokenSource.Cancel();
-                        throw new TimeoutException("Could not connect in less than 250ms");
-                    }
+                    tcpClient = new TcpClient<IMessageService>(new TcpEndPoint(
+                        new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port), 
+                        _connectTimeOutMs));
+                    proxy = tcpClient.Proxy;
                 }
 
                 if (null == message.MessageBytes)
