@@ -51,7 +51,10 @@ namespace ServiceMq
             }
             catch (Exception e)
             {
-                if (null == altDests) throw new WebException("Send to destination failed", e);
+                if (null == altDests || altDests.Length == 0)
+                {
+                    throw new WebException("Send to destination failed", e);
+                }
             }
             Exception altEx = null;
             foreach (var alt in altDests)
@@ -77,7 +80,10 @@ namespace ServiceMq
             }
             catch (Exception e)
             {
-                if (null == altDests) throw new WebException("Send to destination failed", e);
+                if (null == altDests || altDests.Length == 0)
+                {
+                    throw new WebException("Send to destination failed", e);
+                }
             }
             Exception altEx = null;
             foreach (var alt in altDests)
