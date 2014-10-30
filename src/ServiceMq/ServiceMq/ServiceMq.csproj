@@ -32,8 +32,9 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="ServiceWire">
-      <HintPath>..\packages\ServiceWire.1.5.0\lib\net40\ServiceWire.dll</HintPath>
+    <Reference Include="ServiceWire, Version=1.5.1.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\packages\ServiceWire.1.5.1\lib\net40\ServiceWire.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
