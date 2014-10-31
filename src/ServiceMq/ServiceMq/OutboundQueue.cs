@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using ServiceWire.NamedPipes;
 using ServiceWire.TcpIp;
+using ServiceWire;
 
 namespace ServiceMq
 {
@@ -42,12 +43,19 @@ namespace ServiceMq
         private Exception stateException = null;
         private QueueState state = QueueState.Running;
 
+        private readonly PooledDictionary<string, NpClient<IMessageService>> npClientPool = null;
+        private readonly PooledDictionary<string, TcpClient<IMessageService>> tcpClientPool = null;
+
         public OutboundQueue(string name, string msgDir, double hoursReadSentLogsToLive, int connectTimeOutMs)
         {
             this.name = name;
             this.msgDir = msgDir;
             this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
             this.connectTimeOutMs = connectTimeOutMs;
+
+            this.npClientPool = new PooledDictionary<string, NpClient<IMessageService>>();
+            this.tcpClientPool = new PooledDictionary<string, TcpClient<IMessageService>>();
+
             this.outDir = Path.Combine(msgDir, "out");
             this.sentDir = Path.Combine(msgDir, "sent");
             this.failDir = Path.Combine(msgDir, "fail");
@@ -138,6 +146,8 @@ namespace ServiceMq
                 outgoingMessageWaitHandle.Set();
                 outgoingMessageWaitHandle.Dispose();
                 timer.Dispose();
+                npClientPool.Dispose();
+                tcpClientPool.Dispose();
             }
             catch (Exception e)
             {
@@ -301,9 +311,10 @@ namespace ServiceMq
             NpClient<IMessageService> npClient = null;
             TcpClient<IMessageService> tcpClient = null;
             IMessageService proxy = null;
+            var useNpClient = false;
+            var poolKey = message.To.ToString();
             try
             {
-                var useNpClient = false;
                 if (message.To.Transport == Transport.Both)
                 {
                     if (message.To.ServerName == message.From.ServerName)
@@ -315,21 +326,24 @@ namespace ServiceMq
 
                 if (useNpClient)
                 {
-                    npClient = new NpClient<IMessageService>(new NpEndPoint(message.To.PipeName, connectTimeOutMs));
+                    npClient = npClientPool.Request(poolKey,
+                        () => new NpClient<IMessageService>(
+                                    new NpEndPoint(message.To.PipeName, connectTimeOutMs)));
                     proxy = npClient.Proxy;
                 }
                 else
                 {
-                    tcpClient = new TcpClient<IMessageService>(new TcpEndPoint(
-                        new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port), 
-                        connectTimeOutMs));
+                    tcpClient = tcpClientPool.Request(poolKey,
+                        () => new TcpClient<IMessageService>(new TcpEndPoint(
+                                new IPEndPoint(IPAddress.Parse(message.To.IpAddress), 
+                                    message.To.Port), connectTimeOutMs)));
                     proxy = tcpClient.Proxy;
                 }
 
                 if (null == message.MessageBytes)
                 {
                     proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
-                         message.MessageTypeName, message.MessageString);
+                            message.MessageTypeName, message.MessageString);
                 }
                 else
                 {
@@ -339,8 +353,8 @@ namespace ServiceMq
             }
             finally
             {
-                if (null != tcpClient) tcpClient.Dispose();
-                if (null != npClient) npClient.Dispose();
+                if (null != npClient) npClientPool.Release(poolKey, npClient);
+                if (null != tcpClient) tcpClientPool.Release(poolKey, tcpClient);
             }
         }
 

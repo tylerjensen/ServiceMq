@@ -1,4 +1,5 @@
-﻿using ServiceWire.NamedPipes;
+﻿using ServiceWire;
+using ServiceWire.NamedPipes;
 using ServiceWire.TcpIp;
 using System;
 using System.Collections.Generic;
@@ -13,22 +14,28 @@ namespace ServiceMq
     /// <summary>
     /// Use to send immediate to one destination with optional backup destinations.
     /// </summary>
-    public static class Flash
+    public sealed class Flasher : IDisposable
     {
-        private static int _connectTimeOutMs = 500;
-        public static int ConnectTimeOutMs 
-        { 
-            get { return _connectTimeOutMs; } 
-            set { Interlocked.Exchange(ref _connectTimeOutMs, value); } 
+        private readonly int _connectTimeOutMs = 500;
+        private readonly Address _from;
+        private readonly PooledDictionary<string, NpClient<IMessageService>> npClientPool = null;
+        private readonly PooledDictionary<string, TcpClient<IMessageService>> tcpClientPool = null;
+
+        public Flasher(Address from, int connectTimeOutMs = 500)
+        {
+            _from = from;
+            _connectTimeOutMs = connectTimeOutMs;
+            this.npClientPool = new PooledDictionary<string, NpClient<IMessageService>>();
+            this.tcpClientPool = new PooledDictionary<string, TcpClient<IMessageService>>();
         }
 
-        public static Guid Send<T>(Address from, Address dest, T message, params Address[] altDests)
+        public Guid Send<T>(Address dest, T message, params Address[] altDests)
         {
-            var addr = GetOptimalAddress(from, dest);
+            var addr = GetOptimalAddress(dest);
             string msg = SvcStkTxt.TypeSerializer.SerializeToString(message);
             try
             {
-                return SendMsg(msg, typeof(T).FullName, from, addr);
+                return SendMsg(msg, typeof(T).FullName, addr);
             }
             catch (Exception e)
             {
@@ -39,7 +46,7 @@ namespace ServiceMq
             {
                 try
                 {
-                    return SendMsg(msg, typeof(T).FullName, from, alt);
+                    return SendMsg(msg, typeof(T).FullName, alt);
                 }
                 catch (Exception ex) 
                 {
@@ -49,12 +56,12 @@ namespace ServiceMq
             throw new WebException("Alternative destination send failed", altEx);
         }
 
-        public static Guid Send(Address from, Address dest, string messageType, string message, params Address[] altDests)
+        public Guid Send(Address dest, string messageType, string message, params Address[] altDests)
         {
-            var addr = GetOptimalAddress(from, dest);
+            var addr = GetOptimalAddress(dest);
             try
             {
-                return SendMsg(message, messageType, from, addr);
+                return SendMsg(message, messageType, addr);
             }
             catch (Exception e)
             {
@@ -68,7 +75,7 @@ namespace ServiceMq
             {
                 try
                 {
-                    return SendMsg(message, messageType, from, addr);
+                    return SendMsg(message, messageType, addr);
                 }
                 catch (Exception ex) 
                 {
@@ -78,12 +85,12 @@ namespace ServiceMq
             throw new WebException("Alternative destination send failed", altEx);
         }
 
-        public static Guid SendBytes(Address from, Address dest, byte[] message, string messageType, params Address[] altDests)
+        public Guid SendBytes(Address dest, byte[] message, string messageType, params Address[] altDests)
         {
-            var addr = GetOptimalAddress(from, dest);
+            var addr = GetOptimalAddress(dest);
             try
             {
-                return SendMsg(message, messageType, from, addr);
+                return SendMsg(message, messageType, addr);
             }
             catch (Exception e)
             {
@@ -97,7 +104,7 @@ namespace ServiceMq
             {
                 try
                 {
-                    return SendMsg(message, messageType, from, addr);
+                    return SendMsg(message, messageType, addr);
                 }
                 catch (Exception ex) 
                 {
@@ -107,11 +114,11 @@ namespace ServiceMq
             throw new WebException("Alternative destination send failed", altEx);
         }
 
-        private static Guid SendMsg(string msg, string messageType, Address from, Address dest)
+        private Guid SendMsg(string msg, string messageType, Address dest)
         {
             var message = new OutboundMessage()
             {
-                From = from,
+                From = _from,
                 To = dest,
                 Id = Guid.NewGuid(),
                 MessageString = msg,
@@ -122,11 +129,11 @@ namespace ServiceMq
             return message.Id;
         }
 
-        private static Guid SendMsg(byte[] msg, string messageType, Address from, Address dest)
+        private Guid SendMsg(byte[] msg, string messageType, Address dest)
         {
             var message = new OutboundMessage()
             {
-                From = from,
+                From = _from,
                 To = dest,
                 Id = Guid.NewGuid(),
                 MessageBytes = msg,
@@ -137,11 +144,12 @@ namespace ServiceMq
             return message.Id;
         }
 
-        private static void SendMessage(OutboundMessage message)
+        private void SendMessage(OutboundMessage message)
         {
             NpClient<IMessageService> npClient = null;
             TcpClient<IMessageService> tcpClient = null;
             IMessageService proxy = null;
+            var poolKey = message.To.ToString();
             try
             {
                 var useNpClient = false;
@@ -156,14 +164,17 @@ namespace ServiceMq
 
                 if (useNpClient)
                 {
-                    npClient = new NpClient<IMessageService>(new NpEndPoint(message.To.PipeName, _connectTimeOutMs));
+                    npClient = npClientPool.Request(poolKey, 
+                        () => new NpClient<IMessageService>(
+                            new NpEndPoint(message.To.PipeName, _connectTimeOutMs)));
                     proxy = npClient.Proxy;
                 }
                 else
                 {
-                    tcpClient = new TcpClient<IMessageService>(new TcpEndPoint(
-                        new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port), 
-                        _connectTimeOutMs));
+                    tcpClient = tcpClientPool.Request(poolKey,
+                        () => new TcpClient<IMessageService>(new TcpEndPoint(
+                            new IPEndPoint(IPAddress.Parse(message.To.IpAddress), 
+                                message.To.Port), _connectTimeOutMs)));
                     proxy = tcpClient.Proxy;
                 }
 
@@ -180,26 +191,44 @@ namespace ServiceMq
             }
             finally
             {
-                if (null != tcpClient) tcpClient.Dispose();
-                if (null != npClient) npClient.Dispose();
+                if (null != tcpClient) tcpClientPool.Release(poolKey, tcpClient);
+                if (null != npClient) npClientPool.Release(poolKey, npClient);
             }
         }
 
-        private static Address GetOptimalAddress(Address from, Address dest)
+        private Address GetOptimalAddress(Address dest)
         {
             bool chooseTcp = (dest.Transport == Transport.Both
-                                && from.ServerName != dest.ServerName);
+                                && _from.ServerName != dest.ServerName);
             if (chooseTcp || dest.Transport == Transport.Tcp)
             {
-                if (null == from.IpAddress) throw new ArgumentException("Cannot send to a IP endpoint if queue does not have an IP endpoint.", "destEndPoint");
+                if (null == _from.IpAddress) throw new ArgumentException("Cannot send to a IP endpoint if queue does not have an IP endpoint.", "destEndPoint");
                 return new Address(dest.ServerName, dest.Port);
             }
             else
             {
-                if (null == from.PipeName) throw new ArgumentException("Cannot send to a named pipe endpoint if queue does not have named pipe endpoint.", "destEndPoint");
+                if (null == _from.PipeName) throw new ArgumentException("Cannot send to a named pipe endpoint if queue does not have named pipe endpoint.", "destEndPoint");
                 return new Address(dest.PipeName);
             }
         }
 
+
+        #region IDisposable Members
+
+        protected bool _disposed = false;
+
+        public void Dispose()
+        {
+            //MS recommended dispose pattern - prevents GC from disposing again
+            if (!_disposed)
+            {
+                _disposed = true;
+                npClientPool.Dispose();
+                tcpClientPool.Dispose();
+                GC.SuppressFinalize(this);
+            }
+        }
+
+        #endregion
     }
 }

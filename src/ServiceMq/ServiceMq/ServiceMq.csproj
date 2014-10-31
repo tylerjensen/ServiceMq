@@ -32,9 +32,9 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="ServiceWire, Version=1.6.0.0, Culture=neutral, processorArchitecture=MSIL">
+    <Reference Include="ServiceWire, Version=1.6.1.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\packages\ServiceWire.1.6.0\lib\net40\ServiceWire.dll</HintPath>
+      <HintPath>..\packages\ServiceWire.1.6.1\lib\net40\ServiceWire.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -49,7 +49,7 @@
   <ItemGroup>
     <Compile Include="Address.cs" />
     <Compile Include="Extensions.cs" />
-    <Compile Include="Flash.cs" />
+    <Compile Include="Flasher.cs" />
     <Compile Include="OutboundQueue.cs" />
     <Compile Include="InboundQueue.cs" />
     <Compile Include="OutboundMessage.cs" />

@@ -83,30 +83,33 @@ namespace ServiceMq.Tests
         [TestMethod]
         public void FlashDestDownTest()
         {
-            var qfrom = new Address("qfFrom");
-            var q1Address = new Address("qf1pipe");
-            var q2Address = new Address("qf2pipe");
-            using (var q1 = new MessageQueue("qf1", q1Address, @"c:\temp\qf1"))
+            var qfrom = new Address("qfaFrom");
+            var q1Address = new Address("qfa1pipe");
+            var q2Address = new Address("qfa2pipe");
+            using (var flash = new Flasher(qfrom))
             {
-                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
-                var msg = q1.Receive();
-                Assert.IsTrue(msg.Id == id);
-            }
+                using (var q2 = new MessageQueue("qfa2", q2Address, @"c:\temp\qfa2"))
+                {
+                    var id = flash.Send(q1Address, "my test message", q2Address);
+                    var msg = q2.Receive();
+                    Assert.IsTrue(msg.Id == id);
+                }
 
-            using (var q2 = new MessageQueue("qf2", q2Address, @"c:\temp\qf2"))
-            {
-                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
-                var msg = q2.Receive();
-                Assert.IsTrue(msg.Id == id);
-            }
+                using (var q1 = new MessageQueue("qfa1", q1Address, @"c:\temp\qfa1"))
+                {
+                    var id = flash.Send(q1Address, "my test message", q2Address);
+                    var msg = q1.Receive();
+                    Assert.IsTrue(msg.Id == id);
+                }
 
-            try
-            {
-                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
-            }
-            catch (Exception e)
-            {
-                Assert.IsTrue(e is System.Net.WebException);
+                try
+                {
+                    var id = flash.Send(q1Address, "my test message", q2Address);
+                }
+                catch (Exception e)
+                {
+                    Assert.IsTrue(e is System.Net.WebException);
+                }
             }
         }
 
@@ -117,28 +120,36 @@ namespace ServiceMq.Tests
             var q1Address = new Address(Dns.GetHostName(), 8967);
             var q2Address = new Address(Dns.GetHostName(), 8968);
 
-            using (var q1 = new MessageQueue("qf1", q1Address, @"c:\temp\qf1"))
+            using (var flash = new Flasher(qfrom))
             {
-                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
-                var msg = q1.Receive();
-                Assert.IsTrue(msg.Id == id);
+                using (var q2 = new MessageQueue("qf2", q2Address, @"c:\temp\qf2"))
+                {
+                    var id = flash.Send(q1Address, "my test message", q2Address);
+                    var msg = q2.Receive();
+                    Assert.IsTrue(msg.Id == id);
+                }
+
+                Thread.Sleep(200);
+
+                using (var q1 = new MessageQueue("qf1", q1Address, @"c:\temp\qf1"))
+                {
+                    var id = flash.Send(q1Address, "my test message", q2Address);
+                    var msg = q1.Receive();
+                    Assert.IsTrue(msg.Id == id);
+                }
+
+
+
+                try
+                {
+                    var id = flash.Send(q1Address, "my test message", q2Address);
+                }
+                catch (Exception e)
+                {
+                    Assert.IsTrue(e is System.Net.WebException);
+                }
             }
 
-            using (var q2 = new MessageQueue("qf2", q2Address, @"c:\temp\qf2"))
-            {
-                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
-                var msg = q2.Receive();
-                Assert.IsTrue(msg.Id == id);
-            }
-
-            try
-            {
-                var id = Flash.Send(qfrom, q1Address, "my test message", q2Address);
-            }
-            catch (Exception e)
-            {
-                Assert.IsTrue(e is System.Net.WebException);
-            }
         }
     }
 }
