@@ -24,16 +24,16 @@ namespace ServiceMq
     internal class OutboundQueue
     {
         private const string DtFormat = "yyyyMMddHHmmssfff";
-
-        private readonly Queue<OutboundMessage> mq = new Queue<OutboundMessage>();
-        private readonly Dictionary<string, Queue<OutboundMessage>> retryQueues = new Dictionary<string, Queue<OutboundMessage>>();
+        private const int WaitTimeoutMs = 500;
+        private readonly Queue<string> mq = new Queue<string>();
+        private readonly Dictionary<string, Queue<RetryToken>> retryQueues = new Dictionary<string, Queue<RetryToken>>();
         private readonly string msgDir;
         private readonly string outDir;
         private readonly string sentDir;
         private readonly string failDir;
         private readonly string name;
         private readonly int connectTimeOutMs;
-
+        private readonly bool persistMessagesSentLogs;
         private volatile bool continueProcessing = true;
         private ManualResetEvent outgoingMessageWaitHandle = new ManualResetEvent(false);
         private readonly Timer timer = null;
@@ -46,12 +46,14 @@ namespace ServiceMq
         private readonly PooledDictionary<string, NpClient<IMessageService>> npClientPool = null;
         private readonly PooledDictionary<string, TcpClient<IMessageService>> tcpClientPool = null;
 
-        public OutboundQueue(string name, string msgDir, double hoursReadSentLogsToLive, int connectTimeOutMs)
+        public OutboundQueue(string name, string msgDir,
+            double hoursReadSentLogsToLive, int connectTimeOutMs, bool persistMessagesSentLogs)
         {
             this.name = name;
             this.msgDir = msgDir;
             this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
             this.connectTimeOutMs = connectTimeOutMs;
+            this.persistMessagesSentLogs = persistMessagesSentLogs;
 
             this.npClientPool = new PooledDictionary<string, NpClient<IMessageService>>();
             this.tcpClientPool = new PooledDictionary<string, TcpClient<IMessageService>>();
@@ -75,8 +77,9 @@ namespace ServiceMq
                     list.Sort();
                     foreach (var msgFile in list)
                     {
-                        var msg = OutboundMessage.ReadFromFile(msgFile);
-                        if (null != msg) mq.Enqueue(msg);
+                        //var msg = OutboundMessage.ReadFromFile(msgFile);
+                        //if (null != msg) 
+                        mq.Enqueue(msgFile);
                     }
                     outgoingMessageWaitHandle.Set();
                 }
@@ -176,7 +179,7 @@ namespace ServiceMq
                 var line = msg.ToLine();
                 File.WriteAllText(msg.Filename, line);
 
-                mq.Enqueue(msg);
+                mq.Enqueue(msg.Filename);
 
                 //increment and roll tcount - max 9999
                 tcount = (tcount > 9999) ? (ushort)0 : (ushort)(tcount + 1);
@@ -192,14 +195,25 @@ namespace ServiceMq
             {
                 try
                 {
-                    outgoingMessageWaitHandle.WaitOne();
+                    if (!outgoingMessageWaitHandle.WaitOne(WaitTimeoutMs)) continue; //loop it
                     if (!continueProcessing) break;
                     OutboundMessage message = null;
+                    RetryToken token = null;
                     lock (mq)
                     {
                         if (mq.Count > 0)
                         {
-                            message = mq.Dequeue();
+                            var msgFile = mq.Dequeue();
+                            message = OutboundMessage.ReadFromFile(msgFile);
+                            if (null != message)
+                            {
+                                token = new RetryToken 
+                                { 
+                                    Filename = message.Filename, 
+                                    LastSendAttempt = DateTime.Now.AddDays(-1), 
+                                    SendAttempts = 0 
+                                };
+                            }
                             //attempt to prevent excessive memory footprint
                             if (mq.Count > 1000) mq.TrimExcess();
                         }
@@ -216,14 +230,14 @@ namespace ServiceMq
                             {
                                 if (kvp.Value.Count > 0)
                                 {
-                                    var peekMsg = kvp.Value.Peek();
-                                    if (peekMsg.LastSendAttempt < oldest)
+                                    token = kvp.Value.Peek();
+                                    if (token.LastSendAttempt < oldest)
                                     {
                                         //only choosee if it is a viable retry candidate
-                                        var secondsSinceLast = (attemptTime - peekMsg.LastSendAttempt).TotalSeconds;
-                                        if (peekMsg.SendAttempts < secondsSinceLast)
+                                        var secondsSinceLast = (attemptTime - token.LastSendAttempt).TotalSeconds;
+                                        if (token.SendAttempts < secondsSinceLast)
                                         {
-                                            oldest = peekMsg.LastSendAttempt;
+                                            oldest = token.LastSendAttempt;
                                             keyWithOldest = kvp.Key;
                                         }
                                     }
@@ -231,7 +245,8 @@ namespace ServiceMq
                             }
                             if (keyWithOldest != string.Empty)
                             {
-                                message = retryQueues[keyWithOldest].Dequeue();
+                                token = retryQueues[keyWithOldest].Dequeue();
+                                message = OutboundMessage.ReadFromFile(token.Filename);
                                 fromRegularQueue = false;
                             }
                         }
@@ -252,16 +267,21 @@ namespace ServiceMq
                             if (fromRegularQueue && retryQueues.ContainsKey(dest) && retryQueues[dest].Count > 0)
                             {
                                 //put regular mq msg onto retry queue to preserve order to that address
-                                retryQueues[dest].Enqueue(message);
+                                retryQueues[dest].Enqueue(new RetryToken
+                                {
+                                    Filename = message.Filename,
+                                    SendAttempts = 0,
+                                    LastSendAttempt = DateTime.Now.AddDays(-1)
+                                });
 
                                 //set message to null and get oldest if it is time to retry - 
                                 message = null;
-                                var peekOld = retryQueues[dest].Peek();
+                                token = retryQueues[dest].Peek();
                                 //should attempt if diff is more than send attempts in seconds
-                                var peekSeconds = (attemptTime - peekOld.LastSendAttempt).TotalSeconds;
-                                if (peekOld.SendAttempts < peekSeconds)
+                                var peekSeconds = (attemptTime - token.LastSendAttempt).TotalSeconds;
+                                if (token.SendAttempts < peekSeconds)
                                 {
-                                    message = peekOld;
+                                    message = OutboundMessage.ReadFromFile(token.Filename);
                                     fromRegularQueue = false;
                                 }
                             }
@@ -270,17 +290,18 @@ namespace ServiceMq
                             if (null != message)
                             {
                                 //if attempts exceed X or time since sent, add to fail
-                                message.LastSendAttempt = attemptTime;
-                                message.SendAttempts++;
+                                token.LastSendAttempt = attemptTime;
+                                token.SendAttempts++;
+                                token.Filename = message.Filename;
                                 try
                                 {
-                                    SendMessage(message);
+                                    SendMessage(message, token.SendAttempts);
                                     LogSent(message);
                                     if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off as success
                                 }
                                 catch (Exception e)
                                 {
-                                    if ((message.LastSendAttempt - message.Sent).TotalHours > 24.0)
+                                    if ((token.LastSendAttempt - message.Sent).TotalHours > 24.0)
                                     {
                                         LogFailed(message);
                                         if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off no more trying
@@ -289,8 +310,11 @@ namespace ServiceMq
                                     {
                                         if (fromRegularQueue)
                                         {
-                                            if (!retryQueues.ContainsKey(dest)) retryQueues.Add(dest, new Queue<OutboundMessage>());
-                                            retryQueues[dest].Enqueue(message);
+                                            if (!retryQueues.ContainsKey(dest))
+                                            {
+                                                retryQueues.Add(dest, new Queue<RetryToken>());
+                                            }
+                                            retryQueues[dest].Enqueue(token);
                                         }
                                     }
                                 }
@@ -306,7 +330,7 @@ namespace ServiceMq
             }
         }
 
-        private void SendMessage(OutboundMessage message)
+        private void SendMessage(OutboundMessage message, int sendAttempts)
         {
             NpClient<IMessageService> npClient = null;
             TcpClient<IMessageService> tcpClient = null;
@@ -342,12 +366,12 @@ namespace ServiceMq
 
                 if (null == message.MessageBytes)
                 {
-                    proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
+                    proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, sendAttempts,
                             message.MessageTypeName, message.MessageString);
                 }
                 else
                 {
-                    proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
+                    proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, sendAttempts,
                         message.MessageTypeName, message.MessageBytes);
                 }
             }
@@ -381,10 +405,13 @@ namespace ServiceMq
         {
             try
             {
-                var fileName = string.Format("sent-{0}.log", DateTime.Now.ToString(DtLogFormat));
-                var logFile = Path.Combine(this.sentDir, fileName);
-                var line = message.ToLine().ToFlatLine();
-                File.AppendAllLines(logFile, new string[] { line });
+                if (persistMessagesSentLogs)
+                {
+                    var fileName = string.Format("sent-{0}.log", DateTime.Now.ToString(DtLogFormat));
+                    var logFile = Path.Combine(this.sentDir, fileName);
+                    var line = message.ToLine().ToFlatLine();
+                    File.AppendAllLines(logFile, new string[] { line });
+                }
                 File.Delete(message.Filename);
             }
             catch (Exception e)
@@ -394,7 +421,7 @@ namespace ServiceMq
             }
 
             //cleanup every two hours
-            if ((DateTime.Now - lastCleaned).TotalHours > 2.0)
+            if (persistMessagesSentLogs && (DateTime.Now - lastCleaned).TotalHours > 2.0)
             {
                 lastCleaned = DateTime.Now;
                 Task.Factory.StartNew(() =>

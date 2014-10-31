@@ -180,12 +180,12 @@ namespace ServiceMq
 
                 if (null == message.MessageBytes)
                 {
-                    proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
+                    proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, 1,
                          message.MessageTypeName, message.MessageString);
                 }
                 else
                 {
-                    proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
+                    proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, 1,
                         message.MessageTypeName, message.MessageBytes);
                 }
             }

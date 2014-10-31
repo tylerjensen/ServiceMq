@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.IO;
 
 namespace ServiceMq.Tests
 {
@@ -20,6 +21,30 @@ namespace ServiceMq.Tests
                 Assert.IsNotNull(msg);
                 Assert.AreEqual(msg.MessageString, "hello world");
             }
+        }
+
+        [TestMethod]
+        public void SimpleTestNoLog()
+        {
+            var q1Address = new Address("q1npipe");
+            var q2Address = new Address("q2npipe");
+            using (var q2 = new MessageQueue("qn2", q2Address, @"c:\temp\qn2", 
+                persistMessagesReadLogs: false, persistMessagesSentLogs: false))
+            using (var q1 = new MessageQueue("qn1", q1Address, @"c:\temp\qn1"))
+            {
+                q1.Send(q2Address, "hello world");
+                var msg = q2.Receive();
+                Assert.IsNotNull(msg);
+                Assert.AreEqual(msg.MessageString, "hello world");
+            }
+            var read = Directory.GetFiles(@"c:\temp\qn2\read", "*.log");
+            var sent = Directory.GetFiles(@"c:\temp\qn2\sent", "*.log");
+            Assert.IsTrue(read.Length == 0);
+            Assert.IsTrue(sent.Length == 0);
+            read = Directory.GetFiles(@"c:\temp\qn1\read", "*.log");
+            sent = Directory.GetFiles(@"c:\temp\qn1\sent", "*.log");
+            Assert.IsTrue(read.Length == 0);
+            Assert.IsTrue(sent.Length > 0);
         }
 
         [TestMethod]

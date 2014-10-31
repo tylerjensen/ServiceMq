@@ -7,6 +7,13 @@ using System.Text;
 
 namespace ServiceMq
 {
+    internal class RetryToken
+    {
+        public string Filename { get; set; }
+        public int SendAttempts { get; set; }
+        public DateTime LastSendAttempt { get; set; }
+    }
+
     internal class OutboundMessage
     {
         private const string DtFormat = "yyyyMMddHHmmssfff";
@@ -19,8 +26,6 @@ namespace ServiceMq
         public string MessageTypeName { get; set; }
         public byte[] MessageBytes { get; set; }
         public string MessageString { get; set; }
-        public int SendAttempts { get; set; }
-        public DateTime LastSendAttempt { get; set; }
 
         public static OutboundMessage ReadFromFile(string fileName)
         {

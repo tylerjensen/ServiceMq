@@ -31,10 +31,15 @@ namespace ServiceMq
         private Exception stateExceptionInbound = null;
         private QueueState stateInbound = QueueState.Running;
 
-        public MessageQueue(string name, Address address, 
-            string msgDir = null, ILog log = null, IStats stats = null,
+        public MessageQueue(string name, 
+            Address address, 
+            string msgDir = null, 
+            ILog log = null, 
+            IStats stats = null,
             double hoursReadSentLogsToLive = 48.0,
-            int connectTimeOutMs = 500)
+            int connectTimeOutMs = 500,
+            bool persistMessagesSentLogs = true,
+            bool persistMessagesReadLogs = true)
         {
             this.name = name;
             this.address = address;
@@ -44,8 +49,10 @@ namespace ServiceMq
             this.connectTimeOutMs = connectTimeOutMs;
 
             //create inbound and outbound queues
-            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, hoursReadSentLogsToLive, connectTimeOutMs);
-            this.inboundQueue = new InboundQueue(this.name, this.msgDir, hoursReadSentLogsToLive);
+            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, 
+                hoursReadSentLogsToLive, connectTimeOutMs, persistMessagesSentLogs);
+            this.inboundQueue = new InboundQueue(this.name, this.msgDir, 
+                hoursReadSentLogsToLive, persistMessagesReadLogs);
 
             //create message service singleton
             this.messageService = new MessageService(this.inboundQueue);

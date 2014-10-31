@@ -11,12 +11,13 @@ namespace ServiceMq
     internal class InboundQueue 
     {
         private const string DtFormat = "yyyyMMddHHmmssfff";
-        private readonly Queue<Message> mq = new Queue<Message>();
+        private readonly Queue<string> mq = new Queue<string>();
         private readonly string msgDir;
         private readonly string inDir;
         private readonly string readDir;
         private readonly string name;
         private readonly double hoursReadSentLogsToLive;
+        private readonly bool persistMessagesReadLogs;
         private volatile bool continueProcessing = true;
         private ManualResetEvent incomingMessageWaitHandle = new ManualResetEvent(false);
         private ushort tcount = 0;
@@ -24,11 +25,13 @@ namespace ServiceMq
         private Exception stateException = null;
         private QueueState state = QueueState.Running;
 
-        public InboundQueue(string name, string msgDir, double hoursReadSentLogsToLive)
+        public InboundQueue(string name, string msgDir,
+            double hoursReadSentLogsToLive, bool persistMessagesReadLogs)
         {
             this.name = name;
             this.msgDir = msgDir;
             this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
+            this.persistMessagesReadLogs = persistMessagesReadLogs;
             this.inDir = Path.Combine(msgDir, "in");
             this.readDir = Path.Combine(msgDir, "read");
             Directory.CreateDirectory(this.inDir);
@@ -43,8 +46,9 @@ namespace ServiceMq
                     list.Sort();
                     foreach (var msgFile in list)
                     {
-                        var msg = Message.ReadFromFile(msgFile);
-                        if (null != msg) mq.Enqueue(msg);
+                        //var msg = Message.ReadFromFile(msgFile);
+                        //if (null != msg) 
+                        mq.Enqueue(msgFile);
                     }
                     incomingMessageWaitHandle.Set();
                 }
@@ -119,7 +123,7 @@ namespace ServiceMq
                 var line = msg.ToLine();
                 File.WriteAllText(msg.Filename, line);
 
-                mq.Enqueue(msg);
+                mq.Enqueue(msg.Filename);
 
                 //increment and roll tcount - max 9999
                 tcount = (tcount > 9999) ? (ushort)0 : (ushort)(tcount + 1);
@@ -133,7 +137,7 @@ namespace ServiceMq
         {
             lock (mq)
             {
-                mq.Enqueue(message);
+                mq.Enqueue(message.Filename);
             }
         }
 
@@ -149,7 +153,9 @@ namespace ServiceMq
                     {
                         if (mq.Count > 0)
                         {
-                            message = mq.Dequeue();
+                            var msgFile = mq.Dequeue();
+                            message = Message.ReadFromFile(msgFile);
+                            if (null == message) continue; //loop again
                             //attempt to prevent excessive memory footprint
                             if (mq.Count > 1000) mq.TrimExcess();
                         }
@@ -180,10 +186,13 @@ namespace ServiceMq
         {
             try
             {
-                var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
-                var logFile = Path.Combine(this.readDir, fileName);
-                var line = message.ToLine().ToFlatLine();
-                File.AppendAllLines(logFile, new string[] { line });
+                if (persistMessagesReadLogs)
+                {
+                    var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
+                    var logFile = Path.Combine(this.readDir, fileName);
+                    var line = message.ToLine().ToFlatLine();
+                    File.AppendAllLines(logFile, new string[] { line });
+                }
                 File.Delete(message.Filename);
             }
             catch (Exception e)
@@ -193,7 +202,7 @@ namespace ServiceMq
             }
 
             //cleanup every two hours
-            if ((DateTime.Now - lastCleaned).TotalHours > 2.0)
+            if (persistMessagesReadLogs && (DateTime.Now - lastCleaned).TotalHours > 2.0)
             {
                 lastCleaned = DateTime.Now;
                 Task.Factory.StartNew(() =>

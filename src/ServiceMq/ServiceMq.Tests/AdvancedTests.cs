@@ -2,6 +2,7 @@
 using System.Net;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Threading;
+using System.IO;
 
 namespace ServiceMq.Tests
 {
@@ -83,6 +84,9 @@ namespace ServiceMq.Tests
         [TestMethod]
         public void FlashDestDownTest()
         {
+            if (Directory.Exists(@"c:\temp\qfa1")) Directory.Delete(@"c:\temp\qfa1", true);
+            if (Directory.Exists(@"c:\temp\qfa2")) Directory.Delete(@"c:\temp\qfa2", true);
+
             var qfrom = new Address("qfaFrom");
             var q1Address = new Address("qfa1pipe");
             var q2Address = new Address("qfa2pipe");
@@ -116,6 +120,9 @@ namespace ServiceMq.Tests
         [TestMethod]
         public void FlashDestDownTcpTest()
         {
+            if (Directory.Exists(@"c:\temp\qf1")) Directory.Delete(@"c:\temp\qf1", true);
+            if (Directory.Exists(@"c:\temp\qf2")) Directory.Delete(@"c:\temp\qf2", true);
+
             var qfrom = new Address(Dns.GetHostName(), 8966);
             var q1Address = new Address(Dns.GetHostName(), 8967);
             var q2Address = new Address(Dns.GetHostName(), 8968);
@@ -137,8 +144,6 @@ namespace ServiceMq.Tests
                     var msg = q1.Receive();
                     Assert.IsTrue(msg.Id == id);
                 }
-
-
 
                 try
                 {
