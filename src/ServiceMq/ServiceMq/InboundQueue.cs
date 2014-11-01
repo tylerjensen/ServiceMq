@@ -18,6 +18,8 @@ namespace ServiceMq
         private readonly string name;
         private readonly double hoursReadSentLogsToLive;
         private readonly bool persistMessagesReadLogs;
+        private readonly int maxMessagesInMemory;
+        private readonly int reorderLevel;
         private volatile bool continueProcessing = true;
         private ManualResetEvent incomingMessageWaitHandle = new ManualResetEvent(false);
         private int tcount = 0;
@@ -26,12 +28,16 @@ namespace ServiceMq
         private QueueState state = QueueState.Running;
 
         public InboundQueue(string name, string msgDir,
-            double hoursReadSentLogsToLive, bool persistMessagesReadLogs)
+            double hoursReadSentLogsToLive, bool persistMessagesReadLogs,
+            int maxMessagesInMemory, int reorderLevel)
         {
             this.name = name;
             this.msgDir = msgDir;
             this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
             this.persistMessagesReadLogs = persistMessagesReadLogs;
+            this.maxMessagesInMemory = maxMessagesInMemory;
+            this.reorderLevel = reorderLevel;
+
             this.inDir = Path.Combine(msgDir, "in");
             this.readDir = Path.Combine(msgDir, "read");
             Directory.CreateDirectory(this.inDir);
@@ -39,7 +45,7 @@ namespace ServiceMq
 
             try
             {
-                this.mq = new CachingQueue<Message>(msgDir, Message.ReadFromFile, "*.imq");
+                this.mq = new CachingQueue<Message>(msgDir, Message.ReadFromFile, "*.imq", maxMessagesInMemory, reorderLevel);
             }
             catch (Exception e)
             {

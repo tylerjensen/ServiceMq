@@ -10,7 +10,7 @@ namespace ServiceMq
 {
     internal class CachingQueue<T>
     {
-        private const int ReorderQty = 32;
+        private const int ReorderQty = 128;
         private readonly object syncRoot = new object();
         private readonly string msgDir;
         private readonly int maxMessagesInMemory;
@@ -25,7 +25,7 @@ namespace ServiceMq
         public Exception ReloadException { get { return reloadException; } }
 
         public CachingQueue(string msgDir, Func<string, T> loadFromFile, string filePattern,
-            int maxMessagesInMemory = 4096, int reorderLevel = 2048, bool persistMessages = true)
+            int maxMessagesInMemory, int reorderLevel, bool persistMessages = true)
         {
             this.msgDir = msgDir;
             this.loadFromFile = loadFromFile;

@@ -34,6 +34,8 @@ namespace ServiceMq
         private readonly string name;
         private readonly int connectTimeOutMs;
         private readonly bool persistMessagesSentLogs;
+        private readonly int maxMessagesInMemory;
+        private readonly int reorderLevel;
 
         private volatile bool continueProcessing = true;
         private ManualResetEvent outgoingMessageWaitHandle = new ManualResetEvent(false);
@@ -48,17 +50,21 @@ namespace ServiceMq
         private readonly PooledDictionary<string, TcpClient<IMessageService>> tcpClientPool = null;
 
         public OutboundQueue(string name, string msgDir,
-            double hoursReadSentLogsToLive, int connectTimeOutMs, bool persistMessagesSentLogs)
+            double hoursReadSentLogsToLive, int connectTimeOutMs, bool persistMessagesSentLogs,
+            int maxMessagesInMemory, int reorderLevel)
         {
             this.name = name;
             this.msgDir = msgDir;
             this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
             this.connectTimeOutMs = connectTimeOutMs;
             this.persistMessagesSentLogs = persistMessagesSentLogs;
+            this.maxMessagesInMemory = maxMessagesInMemory;
+            this.reorderLevel = reorderLevel;
 
             try
             {
-                this.mq = new CachingQueue<OutboundMessage>(msgDir, OutboundMessage.ReadFromFile, "*.omq");
+                this.mq = new CachingQueue<OutboundMessage>(msgDir, OutboundMessage.ReadFromFile, "*.omq", 
+                    maxMessagesInMemory, reorderLevel);
             }
             catch (Exception e)
             {
@@ -271,7 +277,8 @@ namespace ServiceMq
                                     {
                                         if (!retryQueues.ContainsKey(dest)) retryQueues.Add(dest,
                                             new CachingQueue<OutboundMessage>(this.msgDir,
-                                                OutboundMessage.ReadFromFile, "*.omq", persistMessages: false));
+                                                OutboundMessage.ReadFromFile, "*.omq", 
+                                                maxMessagesInMemory, reorderLevel, persistMessages: false));
                                         retryQueues[dest].Enqueue(message.Filename, message);
                                     }
                                 }

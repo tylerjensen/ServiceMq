@@ -25,6 +25,8 @@ namespace ServiceMq
         private readonly NpHost npHost = null;
         private readonly TcpHost tcpHost = null;
         private readonly int connectTimeOutMs = 500;
+        private readonly int maxMessagesInMemory;
+        private readonly int reorderLevel;
 
         private Exception stateExceptionOutbound = null;
         private QueueState stateOutbound = QueueState.Running;
@@ -39,20 +41,26 @@ namespace ServiceMq
             double hoursReadSentLogsToLive = 48.0,
             int connectTimeOutMs = 500,
             bool persistMessagesSentLogs = true,
-            bool persistMessagesReadLogs = true)
+            bool persistMessagesReadLogs = true,
+            int maxMessagesInMemory = 8192, int reorderLevel = 4096)
         {
             this.name = name;
             this.address = address;
             this.msgDir = msgDir ?? GetExecutablePathDirectory();
+            this.maxMessagesInMemory = maxMessagesInMemory;
+            this.reorderLevel = reorderLevel;
+
             Directory.CreateDirectory(this.msgDir);
 
             this.connectTimeOutMs = connectTimeOutMs;
 
             //create inbound and outbound queues
             this.outboundQueue = new OutboundQueue(this.name, this.msgDir, 
-                hoursReadSentLogsToLive, connectTimeOutMs, persistMessagesSentLogs);
+                hoursReadSentLogsToLive, connectTimeOutMs, persistMessagesSentLogs, 
+                maxMessagesInMemory, reorderLevel);
             this.inboundQueue = new InboundQueue(this.name, this.msgDir, 
-                hoursReadSentLogsToLive, persistMessagesReadLogs);
+                hoursReadSentLogsToLive, persistMessagesReadLogs, 
+                maxMessagesInMemory, reorderLevel);
 
             //create message service singleton
             this.messageService = new MessageService(this.inboundQueue);
