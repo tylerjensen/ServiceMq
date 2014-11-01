@@ -10,7 +10,7 @@ namespace ServiceMq
 {
     internal class CachingQueue<T>
     {
-        private const int ReorderQty = 128;
+        private readonly int reorderQty;
         private readonly object syncRoot = new object();
         private readonly string msgDir;
         private readonly int maxMessagesInMemory;
@@ -29,11 +29,23 @@ namespace ServiceMq
         {
             this.msgDir = msgDir;
             this.loadFromFile = loadFromFile;
-            this.maxMessagesInMemory = maxMessagesInMemory;
-            this.reorderLevel = reorderLevel;
+            this.maxMessagesInMemory = maxMessagesInMemory < 128
+                ? 128
+                : maxMessagesInMemory;
+            this.reorderLevel = reorderLevel > this.maxMessagesInMemory
+                ? this.maxMessagesInMemory / 2
+                : reorderLevel < 64
+                    ? 64
+                    : reorderLevel;
+
+            //don't want to read too many at one time
+            this.reorderQty = this.reorderLevel > 1024
+                ? 256
+                : this.reorderLevel / 4;
+
             this.persistMessages = persistMessages;
-            this.keysQueue = new Queue<string>(maxMessagesInMemory);
-            this.messageQueue = new Queue<T>(maxMessagesInMemory);
+            this.keysQueue = new Queue<string>(this.maxMessagesInMemory);
+            this.messageQueue = new Queue<T>(this.maxMessagesInMemory);
             if (persistMessages) Initialize(filePattern);
         }
 
@@ -158,7 +170,7 @@ namespace ServiceMq
                             var loadCount = 0;
                             //don't load more than ReorderQty per lock obtained
                             while (keysQueue.Count > 0
-                                && loadCount < ReorderQty
+                                && loadCount < reorderQty
                                 && messageQueue.Count < maxMessagesInMemory)
                             {
                                 var key = keysQueue.Dequeue();
@@ -176,6 +188,7 @@ namespace ServiceMq
                             break;  //escape the refill loop
                         }
                     }
+                    Thread.Sleep(1); //allow lock competitor on dequeue to break in
                 }
                 reloading = false;
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
