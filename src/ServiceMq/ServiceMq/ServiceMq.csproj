@@ -48,6 +48,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Address.cs" />
+    <Compile Include="CachingQueue.cs" />
     <Compile Include="Extensions.cs" />
     <Compile Include="Flasher.cs" />
     <Compile Include="OutboundQueue.cs" />

@@ -28,7 +28,7 @@ namespace ServiceMq
         }
 
         //id   from   sentts   receivedts   sentattempts   msgtypename   bin/str   message(binbase64)
-        public string ToLine()
+        public override string ToString()
         {
             return string.Format("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}",
                 Id,

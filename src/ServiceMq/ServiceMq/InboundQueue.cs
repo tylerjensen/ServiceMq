@@ -11,7 +11,7 @@ namespace ServiceMq
     internal class InboundQueue 
     {
         private const string DtFormat = "yyyyMMddHHmmssfff";
-        private readonly Queue<string> mq = new Queue<string>();
+        private readonly CachingQueue<Message> mq;
         private readonly string msgDir;
         private readonly string inDir;
         private readonly string readDir;
@@ -20,7 +20,7 @@ namespace ServiceMq
         private readonly bool persistMessagesReadLogs;
         private volatile bool continueProcessing = true;
         private ManualResetEvent incomingMessageWaitHandle = new ManualResetEvent(false);
-        private ushort tcount = 0;
+        private int tcount = 0;
         private DateTime lastCleaned = DateTime.Now.AddDays(-10);
         private Exception stateException = null;
         private QueueState state = QueueState.Running;
@@ -39,19 +39,7 @@ namespace ServiceMq
 
             try
             {
-                //read from in to hydrate queue
-                var list = new List<string>(Directory.GetFiles(this.inDir, "*.imq"));
-                if (list.Count > 0)
-                {
-                    list.Sort();
-                    foreach (var msgFile in list)
-                    {
-                        //var msg = Message.ReadFromFile(msgFile);
-                        //if (null != msg) 
-                        mq.Enqueue(msgFile);
-                    }
-                    incomingMessageWaitHandle.Set();
-                }
+                this.mq = new CachingQueue<Message>(msgDir, Message.ReadFromFile, "*.imq");
             }
             catch (Exception e)
             {
@@ -59,16 +47,14 @@ namespace ServiceMq
                 this.state = QueueState.Failed;
                 throw;
             }
+            if (mq.Count > 0) incomingMessageWaitHandle.Set();
         }
 
         public int Count
         {
             get
             {
-                lock (mq)
-                {
-                    return mq.Count;
-                }
+                return mq.Count;
             }
         }
 
@@ -106,39 +92,31 @@ namespace ServiceMq
 
         public void Enqueue(Message msg)
         {
-            lock (mq)
-            {
-                //write to q file for that address
-                //yyyyMMddHHmmssfff-16bit-from-to-ipport-or-pipename
-                //20140324142165412-0415-010-042-024-155-08746-pipename.omq
+            //write to q file for that address
+            //yyyyMMddHHmmssfff-16bit-from-to-ipport-or-pipename
+            //20140324142165412-0415-010-042-024-155-08746-pipename.omq
 
-                var fileName = string.Format("{0}-{1}-{2}.imq",
-                    msg.Sent.ToString(DtFormat),
-                    tcount.ToString("0000"),
-                    msg.From.ToFileNameString());
+            //assure no possibility of a duplicate
+            var loc = Interlocked.Increment(ref tcount);
 
-                msg.Filename = Path.Combine(this.inDir, fileName);
+            var fileName = string.Format("{0}-{1}-{2}.imq",
+                msg.Sent.ToString(DtFormat),
+                loc.ToString("0000"),
+                msg.From.ToFileNameString());
 
-                //idguid   address-from   address-to   senttimestamp   msgtypename   bin/str   message(base64forbin)
-                var line = msg.ToLine();
-                File.WriteAllText(msg.Filename, line);
+            msg.Filename = Path.Combine(this.inDir, fileName);
+            mq.Enqueue(msg.Filename, msg);
 
-                mq.Enqueue(msg.Filename);
+            //increment and roll tcount - max 9000
+            if (loc > 9000) Interlocked.Exchange(ref tcount, 0);
 
-                //increment and roll tcount - max 9999
-                tcount = (tcount > 9999) ? (ushort)0 : (ushort)(tcount + 1);
-
-                //signal received
-                if (continueProcessing) incomingMessageWaitHandle.Set();
-            }
+            //signal received
+            if (continueProcessing) incomingMessageWaitHandle.Set();
         }
 
         public void ReEnqueue(Message message)
         {
-            lock (mq)
-            {
-                mq.Enqueue(message.Filename);
-            }
+            mq.ReEnqueue(message.Filename, message);
         }
 
         public Message Receive(int timeoutMs, bool logRead = true)
@@ -148,29 +126,18 @@ namespace ServiceMq
                 if (incomingMessageWaitHandle.WaitOne(timeoutMs))
                 {
                     if (!continueProcessing) break;
-                    Message message = null;
-                    lock (mq)
+                    Message message = mq.Dequeue();
+                    if (null == message)
                     {
-                        if (mq.Count > 0)
-                        {
-                            var msgFile = mq.Dequeue();
-                            message = Message.ReadFromFile(msgFile);
-                            if (null == message) continue; //loop again
-                            //attempt to prevent excessive memory footprint
-                            if (mq.Count > 1000) mq.TrimExcess();
-                        }
-                        else
-                        {
-                            //set to nonsignaled and block on WaitOne again
-                            incomingMessageWaitHandle.Reset();
-                        }
+                        //set to nonsignaled and block on WaitOne again
+                        incomingMessageWaitHandle.Reset();
+                        continue; //loop again
                     }
-
-                    if (null != message)
+                    if (logRead)
                     {
-                        if (logRead) LogRead(message);
-                        return message;
+                        LogRead(message);
                     }
+                    return message;
                 }
                 else
                 {
@@ -190,7 +157,7 @@ namespace ServiceMq
                 {
                     var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
                     var logFile = Path.Combine(this.readDir, fileName);
-                    var line = message.ToLine().ToFlatLine();
+                    var line = message.ToString().ToFlatLine();
                     File.AppendAllLines(logFile, new string[] { line });
                 }
                 File.Delete(message.Filename);
