@@ -154,7 +154,31 @@ namespace ServiceMq.Tests
                     Assert.IsTrue(e is System.Net.WebException);
                 }
             }
-
         }
+
+        [TestMethod]
+        public void SimpleBulkReceiveTest()
+        {
+            var q1Address = new Address("qbr1pipe");
+            var q2Address = new Address("qbr2pipe");
+            using (var q2 = new MessageQueue("qbr2", q2Address, @"c:\temp\qbr2"))
+            using (var q1 = new MessageQueue("qbr1", q1Address, @"c:\temp\qbr1"))
+            {
+                q1.Send(q2Address, "hello world 1");
+                q1.Send(q2Address, "hello world 2");
+                q1.Send(q2Address, "hello world 3");
+                q1.Send(q2Address, "hello world 4");
+                Thread.Sleep(150);
+                var msg = q2.ReceiveBulk(2);
+                Assert.IsNotNull(msg);
+                Assert.AreEqual(msg[0].MessageString, "hello world 1");
+                Assert.AreEqual(msg[1].MessageString, "hello world 2");
+                msg = q2.ReceiveBulk(2);
+                Assert.IsNotNull(msg);
+                Assert.AreEqual(msg[0].MessageString, "hello world 3");
+                Assert.AreEqual(msg[1].MessageString, "hello world 4");
+            }
+        }
+
     }
 }

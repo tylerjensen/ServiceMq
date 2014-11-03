@@ -61,9 +61,16 @@ namespace ServiceMq
             this.maxMessagesInMemory = maxMessagesInMemory;
             this.reorderLevel = reorderLevel;
 
+            this.outDir = Path.Combine(msgDir, "out");
+            this.sentDir = Path.Combine(msgDir, "sent");
+            this.failDir = Path.Combine(msgDir, "fail");
+            Directory.CreateDirectory(this.outDir);
+            Directory.CreateDirectory(this.sentDir);
+            Directory.CreateDirectory(this.failDir);
+
             try
             {
-                this.mq = new CachingQueue<OutboundMessage>(msgDir, OutboundMessage.ReadFromFile, "*.omq", 
+                this.mq = new CachingQueue<OutboundMessage>(outDir, OutboundMessage.ReadFromFile, "*.omq", 
                     maxMessagesInMemory, reorderLevel);
             }
             catch (Exception e)
@@ -76,13 +83,6 @@ namespace ServiceMq
 
             this.npClientPool = new PooledDictionary<string, NpClient<IMessageService>>();
             this.tcpClientPool = new PooledDictionary<string, TcpClient<IMessageService>>();
-
-            this.outDir = Path.Combine(msgDir, "out");
-            this.sentDir = Path.Combine(msgDir, "sent");
-            this.failDir = Path.Combine(msgDir, "fail");
-            Directory.CreateDirectory(this.outDir);
-            Directory.CreateDirectory(this.sentDir);
-            Directory.CreateDirectory(this.failDir);
 
             //kick off sending thread
             Task.Factory.StartNew(SendMessages, TaskCreationOptions.LongRunning);

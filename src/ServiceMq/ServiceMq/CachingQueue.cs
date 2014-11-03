@@ -39,8 +39,8 @@ namespace ServiceMq
                     : reorderLevel;
 
             //don't want to read too many at one time
-            this.reorderQty = this.reorderLevel > 1024
-                ? 256
+            this.reorderQty = this.reorderLevel > 2048
+                ? 512
                 : this.reorderLevel / 4;
 
             this.persistMessages = persistMessages;
@@ -85,6 +85,25 @@ namespace ServiceMq
                     return msg;
                 }
                 return default(T);
+            }
+        }
+
+        public IList<T> DequeueBulk(int maxMessagesToReceive)
+        {
+            lock (syncRoot)
+            {
+                if (messageQueue.Count > 0)
+                {
+                    var list = new List<T>(maxMessagesToReceive);
+                    while (list.Count < maxMessagesToReceive && messageQueue.Count > 0)
+                    {
+                        var msg = messageQueue.Dequeue();
+                        list.Add(msg);
+                    }
+                    RefillCheck();
+                    return list;
+                }
+                return new List<T>();
             }
         }
 

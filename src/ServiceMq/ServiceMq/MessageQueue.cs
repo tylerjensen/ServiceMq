@@ -267,6 +267,23 @@ namespace ServiceMq
         }
 
         /// <summary>
+        /// Get one to many messages in order received. Removes all returned from the inbox and 
+        /// logs it to the read log. Blocking if timeoutMs = -1.
+        /// </summary>
+        /// <param name="maxMessagesToReceive">Indicate the maximum messages to pull from the queue.</param>
+        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
+        /// <returns></returns>
+        public IList<Message> ReceiveBulk(int maxMessagesToReceive, int timeoutMs = -1)
+        {
+            if (this.inboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Inbound queue exception state. See inner exception.",
+                    this.inboundQueue.StateException);
+            }
+            return this.inboundQueue.ReceiveBulk(maxMessagesToReceive, timeoutMs);
+        }
+
+        /// <summary>
         /// Get one message in order received without removing it from the inbox. Blocking if timeoutMs = -1.
         /// If Acknowledge is not called, the message will remain in the inbox and be queued again when
         /// the MessageQueue is next constructed.
@@ -281,6 +298,24 @@ namespace ServiceMq
                     this.inboundQueue.StateException);
             }
             return this.inboundQueue.Receive(timeoutMs, logRead: false);
+        }
+
+        /// <summary>
+        /// Get one to many messages in order received without removing it from the inbox. 
+        /// Blocking if timeoutMs = -1. If Acknowledge is not called, the message will 
+        /// remain in the inbox and be queued again when the MessageQueue is next constructed.
+        /// </summary>
+        /// <param name="maxMessagesToReceive">Indicate the maximum messages to pull from the queue.</param>
+        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
+        /// <returns></returns>
+        public IList<Message> AcceptBulk(int maxMessagesToReceive, int timeoutMs = -1)
+        {
+            if (this.inboundQueue.State == QueueState.Failed)
+            {
+                throw new IOException("Inbound queue exception state. See inner exception.",
+                    this.inboundQueue.StateException);
+            }
+            return this.inboundQueue.ReceiveBulk(maxMessagesToReceive, timeoutMs, logRead: false);
         }
 
         /// <summary>

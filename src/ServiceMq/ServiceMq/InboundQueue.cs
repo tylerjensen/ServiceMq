@@ -45,7 +45,8 @@ namespace ServiceMq
 
             try
             {
-                this.mq = new CachingQueue<Message>(msgDir, Message.ReadFromFile, "*.imq", maxMessagesInMemory, reorderLevel);
+                this.mq = new CachingQueue<Message>(inDir, 
+                    Message.ReadFromFile, "*.imq", maxMessagesInMemory, reorderLevel);
             }
             catch (Exception e)
             {
@@ -153,25 +154,63 @@ namespace ServiceMq
             return null;
         }
 
+        public IList<Message> ReceiveBulk(int maxMessagesToReceive, 
+            int timeoutMs, bool logRead = true)
+        {
+            if (maxMessagesToReceive < 1) maxMessagesToReceive = 1;
+            while (continueProcessing)
+            {
+                if (incomingMessageWaitHandle.WaitOne(timeoutMs))
+                {
+                    if (!continueProcessing) break;
+                    IList<Message> messages = mq.DequeueBulk(maxMessagesToReceive);
+                    if (messages.Count == 0)
+                    {
+                        //set to nonsignaled and block on WaitOne again
+                        incomingMessageWaitHandle.Reset();
+                        continue; //loop again
+                    }
+                    if (logRead)
+                    {
+                        LogRead(messages);
+                    }
+                    return messages;
+                }
+                else
+                {
+                    break; //timedout
+                }
+            }
+            return new List<Message>(); //empty rather than null
+        }
+
         private const string DtLogFormat = "yyyyMMdd-HH-mm";
 
         private void LogRead(Message message)
         {
-            try
+            LogRead(new [] { message });
+        }
+
+        private void LogRead(IEnumerable<Message> messages)
+        {
+            foreach (var message in messages)
             {
-                if (persistMessagesReadLogs)
+                try
                 {
-                    var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
-                    var logFile = Path.Combine(this.readDir, fileName);
-                    var line = message.ToString().ToFlatLine();
-                    File.AppendAllLines(logFile, new string[] { line });
+                    if (persistMessagesReadLogs)
+                    {
+                        var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
+                        var logFile = Path.Combine(this.readDir, fileName);
+                        var line = message.ToString().ToFlatLine();
+                        File.AppendAllLines(logFile, new string[] { line });
+                    }
+                    File.Delete(message.Filename);
                 }
-                File.Delete(message.Filename);
-            }
-            catch (Exception e)
-            {
-                this.stateException = e;
-                this.state = QueueState.Cautioned;
+                catch (Exception e)
+                {
+                    this.stateException = e;
+                    this.state = QueueState.Cautioned;
+                }
             }
 
             //cleanup every two hours
