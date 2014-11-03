@@ -135,6 +135,7 @@
     <Compile Include="SvcStkTxt\TypeSerializer.Generic.cs" />
     <Compile Include="SvcStkTxt\WebRequestExtensions.cs" />
     <Compile Include="SvcStkTxt\XmlSerializer.cs" />
+    <Compile Include="Win32Utils.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

@@ -204,7 +204,8 @@ namespace ServiceMq
                         var line = message.ToString().ToFlatLine();
                         File.AppendAllLines(logFile, new string[] { line });
                     }
-                    File.Delete(message.Filename);
+                    //File.Delete(message.Filename);
+                    FastFile.Delete(message.Filename);
                 }
                 catch (Exception e)
                 {
@@ -227,7 +228,7 @@ namespace ServiceMq
                             var info = new FileInfo(file);
                             if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
                             {
-                                File.Delete(file);
+                                FastFile.Delete(file);
                             }
                         }
                     }
