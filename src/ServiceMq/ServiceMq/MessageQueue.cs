@@ -389,6 +389,7 @@ namespace ServiceMq
                 if (disposing)
                 {
                     //cleanup here
+                    FastFile.DeleteAll(); //clean marked for deletion
                     this.outboundQueue.Stop();
                     this.inboundQueue.Stop();
                     if (null != npHost) npHost.Dispose();

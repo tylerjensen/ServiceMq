@@ -356,8 +356,8 @@ namespace ServiceMq
                 var fileName = string.Format("fail-{0}.log", DateTime.Now.ToString(DtLogFormat));
                 var logFile = Path.Combine(this.failDir, fileName);
                 var line = message.ToString().ToFlatLine();
-                File.AppendAllLines(logFile, new string[] { line });
-                FastFile.Delete(message.Filename);
+                FastFile.AppendAllLines(logFile, new string[] { line });
+                FastFile.DeleteAsync(message.Filename);
             }
             catch (Exception e)
             {
@@ -375,9 +375,9 @@ namespace ServiceMq
                     var fileName = string.Format("sent-{0}.log", DateTime.Now.ToString(DtLogFormat));
                     var logFile = Path.Combine(this.sentDir, fileName);
                     var line = message.ToString().ToFlatLine();
-                    File.AppendAllLines(logFile, new string[] { line });
+                    FastFile.AppendAllLines(logFile, new string[] { line });
                 }
-                FastFile.Delete(message.Filename);
+                FastFile.DeleteAsync(message.Filename);
             }
             catch (Exception e)
             {
@@ -399,7 +399,7 @@ namespace ServiceMq
                             var info = new FileInfo(file);
                             if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
                             {
-                                FastFile.Delete(file);
+                                FastFile.DeleteAsync(file);
                             }
                         }
                     }

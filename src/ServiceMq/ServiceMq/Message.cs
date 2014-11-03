@@ -44,7 +44,7 @@ namespace ServiceMq
         public static Message ReadFromFile(string fileName)
         {
             //id   from   sentts   receivedts   sentattempts   msgtypename   bin/str   message(binbase64)
-            var text = File.ReadAllText(fileName);
+            var text = FastFile.ReadAllText(fileName);
             var parts = text.Split('\t');
             if (parts.Length == 8)
             {

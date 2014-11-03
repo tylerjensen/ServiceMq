@@ -202,10 +202,10 @@ namespace ServiceMq
                         var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
                         var logFile = Path.Combine(this.readDir, fileName);
                         var line = message.ToString().ToFlatLine();
-                        File.AppendAllLines(logFile, new string[] { line });
+                        FastFile.AppendAllLines(logFile, new string[] { line });
                     }
                     //File.Delete(message.Filename);
-                    FastFile.Delete(message.Filename);
+                    FastFile.DeleteAsync(message.Filename);
                 }
                 catch (Exception e)
                 {
@@ -228,7 +228,7 @@ namespace ServiceMq
                             var info = new FileInfo(file);
                             if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
                             {
-                                FastFile.Delete(file);
+                                FastFile.DeleteAsync(file);
                             }
                         }
                     }

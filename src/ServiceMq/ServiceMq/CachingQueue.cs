@@ -125,7 +125,7 @@ namespace ServiceMq
             if (persistMessages)
             {
                 var line = message.ToString();
-                File.WriteAllText(key, line);
+                FastFile.WriteAllText(key, line);
             }
             lock (syncRoot)
             {

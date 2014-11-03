@@ -25,7 +25,7 @@ namespace ServiceMq
         public static OutboundMessage ReadFromFile(string fileName)
         {
             //idguid   address-from   address-to   senttimestamp   msgtypename   bin/str   message(base64forbin)
-            var text = File.ReadAllText(fileName);
+            var text = FastFile.ReadAllText(fileName);
             var parts = text.Split('\t');
             if (parts.Length == 7)
             {
