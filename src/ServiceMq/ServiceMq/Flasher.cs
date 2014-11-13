@@ -1,4 +1,5 @@
-﻿using ServiceWire;
+﻿using System.IO;
+using ServiceWire;
 using ServiceWire.NamedPipes;
 using ServiceWire.TcpIp;
 using System;
@@ -42,11 +43,11 @@ namespace ServiceMq
                 if (null == altDests || altDests.Length == 0) throw new WebException("Send to destination failed", e);
             }
             Exception altEx = null;
-            foreach (var alt in altDests)
+            foreach (var altAddr in altDests)
             {
                 try
                 {
-                    return SendMsg(msg, typeof(T).FullName, alt);
+                    return SendMsg(msg, typeof(T).FullName, altAddr);
                 }
                 catch (Exception ex) 
                 {
@@ -71,11 +72,11 @@ namespace ServiceMq
                 }
             }
             Exception altEx = null;
-            foreach (var alt in altDests)
+            foreach (var altAddr in altDests)
             {
                 try
                 {
-                    return SendMsg(message, messageType, addr);
+                    return SendMsg(message, messageType, altAddr);
                 }
                 catch (Exception ex) 
                 {
@@ -100,11 +101,11 @@ namespace ServiceMq
                 }
             }
             Exception altEx = null;
-            foreach (var alt in altDests)
+            foreach (var altAddr in altDests)
             {
                 try
                 {
-                    return SendMsg(message, messageType, addr);
+                    return SendMsg(message, messageType, altAddr);
                 }
                 catch (Exception ex) 
                 {
@@ -164,7 +165,7 @@ namespace ServiceMq
 
                 if (useNpClient)
                 {
-                    npClient = npClientPool.Request(poolKey, 
+                    npClient = npClientPool.Request(poolKey,
                         () => new NpClient<IMessageService>(
                             new NpEndPoint(message.To.PipeName, _connectTimeOutMs)));
                     proxy = npClient.Proxy;
@@ -173,15 +174,19 @@ namespace ServiceMq
                 {
                     tcpClient = tcpClientPool.Request(poolKey,
                         () => new TcpClient<IMessageService>(new TcpEndPoint(
-                            new IPEndPoint(IPAddress.Parse(message.To.IpAddress), 
+                            new IPEndPoint(IPAddress.Parse(message.To.IpAddress),
                                 message.To.Port), _connectTimeOutMs)));
                     proxy = tcpClient.Proxy;
                 }
 
+                if (null == proxy)
+                {
+                    throw new IOException("Unable to get or create proxy.");
+                }
                 if (null == message.MessageBytes)
                 {
                     proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, 1,
-                         message.MessageTypeName, message.MessageString);
+                        message.MessageTypeName, message.MessageString);
                 }
                 else
                 {
@@ -189,8 +194,24 @@ namespace ServiceMq
                         message.MessageTypeName, message.MessageBytes);
                 }
             }
+            catch
+            {
+                //assure failed client is properly disposed and not returned to pool
+                if (null != tcpClient)
+                {
+                    tcpClient.Dispose();
+                    tcpClient = null;
+                }
+                if (null != npClient)
+                {
+                    npClient.Dispose();
+                    npClient = null;
+                }
+                throw;
+            }
             finally
             {
+                //return client to pool
                 if (null != tcpClient) tcpClientPool.Release(poolKey, tcpClient);
                 if (null != npClient) npClientPool.Release(poolKey, npClient);
             }

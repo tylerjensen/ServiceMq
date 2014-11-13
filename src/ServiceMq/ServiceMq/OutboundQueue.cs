@@ -340,8 +340,24 @@ namespace ServiceMq
                         message.MessageTypeName, message.MessageBytes);
                 }
             }
+            catch
+            {
+                //assure failed client is properly disposed and not returned to pool
+                if (null != tcpClient)
+                {
+                    tcpClient.Dispose();
+                    tcpClient = null;
+                }
+                if (null != npClient)
+                {
+                    npClient.Dispose();
+                    npClient = null;
+                }
+                throw;
+            }
             finally
             {
+                //return client to pool
                 if (null != npClient) npClientPool.Release(poolKey, npClient);
                 if (null != tcpClient) tcpClientPool.Release(poolKey, tcpClient);
             }
