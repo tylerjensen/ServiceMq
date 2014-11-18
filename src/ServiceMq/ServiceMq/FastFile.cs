@@ -12,23 +12,28 @@ namespace ServiceMq
 {
     internal static class FastFile
     {
-        private const int MaxDeleteQueueCount = 64;
-        private const int MaxSecondsToDelete = 4;
-        private const int MaxSecondsToAppend = 2;
-        private const int MaxMinutesToLiveInAppendQueue = 3;
+        private const int AppendQueueMaxMinutesToLive = 5;
 
-        private static DateTime lastDeleted = DateTime.Now;
-        private static DateTime lastAppended = DateTime.Now;
+        private static object syncRoot = new object();
         private static Exception lastDeleteException;
         private static Exception lastAppendException;
         private static Exception lastWriteAllException;
+
         private static ConcurrentQueue<string> deleteQueue = new ConcurrentQueue<string>();
         private static ConcurrentDictionary<string, ConcurrentQueue<string[]>> appendQueues =
             new ConcurrentDictionary<string, ConcurrentQueue<string[]>>();
         private static ConcurrentDictionary<string, byte> pendingWrites = new ConcurrentDictionary<string, byte>();
+        private static ConcurrentQueue<Tuple<string, string>> writeTextQueue = new ConcurrentQueue<Tuple<string, string>>(); 
         private static ConcurrentDictionary<string, DateTime> lastAppendTimes =
-            new ConcurrentDictionary<string, DateTime>(); 
+            new ConcurrentDictionary<string, DateTime>();
 
+        private static ManualResetEvent deleteSignal = null;
+        private static Task deleteTask = null;
+        private static ManualResetEvent writeAllSignal = null;
+        private static Task writeAllTask = null;
+        private static ManualResetEvent appendSignal = null;
+        private static Task appendTask = null;
+        private static bool continueProcessing = true;
 
         internal static Exception LastDeleteException { get { return lastDeleteException; } }
         internal static Exception LastAppendException { get { return lastAppendException; } }
@@ -54,22 +59,51 @@ namespace ServiceMq
         internal static void WriteAllText(string fileName, string text)
         {
             pendingWrites.TryAdd(fileName, 0);
-            Task.Factory.StartNew(() =>
+            writeTextQueue.Enqueue(new Tuple<string, string>(fileName, text));
+            if (null == writeAllTask)
             {
-                try
+                lock (syncRoot)
                 {
-                    File.WriteAllText(fileName, text);
+                    if (null == writeAllTask)
+                    {
+                        writeAllSignal = new ManualResetEvent(false);
+                        writeAllTask = Task.Factory.StartNew(ProcessWriteAll, CancellationToken.None,
+                            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                    }
                 }
-                catch (Exception e)
+            }
+            writeAllSignal.Set();
+        }
+
+        private static void ProcessWriteAll()
+        {
+            while (continueProcessing)
+            {
+                if (writeAllSignal.WaitOne(100))
                 {
-                    lastWriteAllException = e;
+                    writeAllSignal.Reset();
+                    while (!writeTextQueue.IsEmpty)
+                    {
+                        Tuple<string, string> data;
+                        if (writeTextQueue.TryDequeue(out data))
+                        {
+                            try
+                            {
+                                File.WriteAllText(data.Item1, data.Item2);
+                            }
+                            catch (Exception e)
+                            {
+                                lastWriteAllException = e;
+                            }
+                            finally
+                            {
+                                byte s;
+                                pendingWrites.TryRemove(data.Item1, out s);
+                            }
+                        }
+                    }
                 }
-                finally
-                {
-                    byte s;
-                    pendingWrites.TryRemove(fileName, out s);
-                }
-            });
+            }
         }
 
         internal static void AppendAllLines(string fileName, string[] lines)
@@ -77,132 +111,131 @@ namespace ServiceMq
             var queue = appendQueues.GetOrAdd(fileName, new ConcurrentQueue<string[]>());
             queue.Enqueue(lines);
             lastAppendTimes.AddOrUpdate(fileName, DateTime.Now, (s, time) => DateTime.Now);
-            ProcessAppends();
+            if (null == appendTask)
+            {
+                lock (syncRoot)
+                {
+                    if (null == appendTask)
+                    {
+                        appendSignal = new ManualResetEvent(false);
+                        appendTask = Task.Factory.StartNew(ProcessAppends, CancellationToken.None,
+                            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                    }
+                }
+            }
+            appendSignal.Set();
         }
 
         private static void ProcessAppends()
         {
-            if ((DateTime.Now - lastAppended).TotalSeconds > MaxSecondsToAppend)
+            while (continueProcessing)
             {
-                lastAppended = DateTime.Now;
-                AsyncWriteAll();
-            }
-        }
-
-        private static void AsyncWriteAll()
-        {
-            Task.Factory.StartNew(WriteAll);
-        }
-
-        internal static void WriteAll()
-        {
-            //append and clean up - clean up
-            try
-            {
-                //prevent two threads from entering here at same time
-                lock (appendQueues)
+                if (appendSignal.WaitOne(100))
                 {
-                    lastAppended = DateTime.Now;
-
-                    var files = appendQueues.Keys.ToArray();
-                    foreach (var file in files)
+                    appendSignal.Reset();
+                    //append and clean up - clean up
+                    try
                     {
-                        ConcurrentQueue<string[]> queue;
-                        if (appendQueues.TryGetValue(file, out queue))
+                        var files = appendQueues.Keys.ToArray();
+                        foreach (var file in files)
                         {
-                            //pull all lines from queue
-                            var lines = new List<string>();
-                            while (!queue.IsEmpty)
+                            ConcurrentQueue<string[]> queue;
+                            if (appendQueues.TryGetValue(file, out queue))
                             {
-                                string[] txt;
-                                if (queue.TryDequeue(out txt))
+                                //pull all lines from queue
+                                var lines = new List<string>();
+                                while (!queue.IsEmpty)
                                 {
-                                    lines.AddRange(txt);
+                                    string[] txt;
+                                    if (queue.TryDequeue(out txt))
+                                    {
+                                        lines.AddRange(txt);
+                                    }
                                 }
-                            }
 
-                            //we have all lines, write in one write to file
-                            try
-                            {
-                                File.AppendAllLines(file, lines);
-                            }
-                            catch (Exception ex)
-                            {
-                                lastWriteAllException = ex;
-                            }
-
-                            //see if queue should be retired
-                            DateTime lastWrite;
-                            if (lastAppendTimes.TryGetValue(file, out lastWrite))
-                            {
-                                if ((DateTime.Now - lastWrite).TotalMinutes > MaxMinutesToLiveInAppendQueue)
+                                //we have all lines, write in one write to file
+                                try
                                 {
-                                    appendQueues.TryRemove(file, out queue);
-                                    lastAppendTimes.TryRemove(file, out lastWrite);
+                                    File.AppendAllLines(file, lines);
+                                }
+                                catch (Exception ex)
+                                {
+                                    lastWriteAllException = ex;
+                                }
+
+                                //see if queue should be retired
+                                DateTime lastWrite;
+                                if (lastAppendTimes.TryGetValue(file, out lastWrite))
+                                {
+                                    if ((DateTime.Now - lastWrite).TotalMinutes > AppendQueueMaxMinutesToLive)
+                                    {
+                                        appendQueues.TryRemove(file, out queue);
+                                        lastAppendTimes.TryRemove(file, out lastWrite);
+                                    }
                                 }
                             }
                         }
                     }
+                    catch (Exception e)
+                    {
+                        lastWriteAllException = e;
+                    }
                 }
-            }
-            catch (Exception e)
-            {
-                lastWriteAllException = e;
             }
         }
 
-        internal static void DeleteAsync(string fileName)
+        internal static void Delete(string fileName)
         {
             deleteQueue.Enqueue(fileName);
-            ProcessDeletes();
+            if (null == deleteTask)
+            {
+                lock (syncRoot)
+                {
+                    if (null == deleteTask)
+                    {
+                        deleteSignal = new ManualResetEvent(false);
+                        deleteTask = Task.Factory.StartNew(ProcessDeletes, CancellationToken.None,
+                            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                    }
+                }
+            }
+            deleteSignal.Set();
         }
 
         private static void ProcessDeletes()
         {
-            if (deleteQueue.Count > MaxDeleteQueueCount)
+            while (continueProcessing)
             {
-                AsyncDeletes();
-            }
-            else if ((DateTime.Now - lastDeleted).TotalSeconds > MaxSecondsToDelete)
-            {
-                lastDeleted = DateTime.Now;
-                AsyncDeletes();
-            }
-        }
-
-        private static void AsyncDeletes()
-        {
-            Task.Factory.StartNew(DeleteAll);
-        }
-
-        internal static void DeleteAll()
-        {
-            try
-            {
-                lastDeleted = DateTime.Now;
-                while (!deleteQueue.IsEmpty)
+                if (deleteSignal.WaitOne(100))
                 {
                     try
                     {
-                        string fileName;
-                        if (deleteQueue.TryDequeue(out fileName))
+                        deleteSignal.Reset();
+                        while (!deleteQueue.IsEmpty)
                         {
-                            Delete(fileName);
+                            try
+                            {
+                                string fileName;
+                                if (deleteQueue.TryDequeue(out fileName))
+                                {
+                                    DeleteFile(fileName);
+                                }
+                            }
+                            catch (Exception ie)
+                            {
+                                lastDeleteException = ie;
+                            }
                         }
                     }
-                    catch (Exception ie)
+                    catch (Exception e)
                     {
-                        lastDeleteException = ie;
+                        lastDeleteException = e;
                     }
                 }
             }
-            catch (Exception e)
-            {
-                lastDeleteException = e;
-            }
         }
 
-        private static void Delete(string fileName)
+        private static void DeleteFile(string fileName)
         {
             //don't try to delete it until it has been written if in fact its is pending
             SpinWait.SpinUntil(() => !pendingWrites.ContainsKey(fileName));
@@ -211,6 +244,44 @@ namespace ServiceMq
             if (lastWin32Error == 2)
                 return;
             throw new IOException("Delete failed", lastWin32Error);
+        }
+
+        internal static void Dispose()
+        {
+            continueProcessing = false;
+            if (null != deleteTask) deleteTask.Wait(2000);
+            if (null != appendTask) appendTask.Wait(2000);
+            if (null != writeAllTask) writeAllTask.Wait(2000);
+            if (null != deleteSignal)
+            {
+                deleteSignal.Dispose();
+                deleteSignal = null;
+            }
+            if (null != appendSignal)
+            {
+                appendSignal.Dispose();
+                appendSignal = null;
+            }
+            if (null != writeAllSignal)
+            {
+                writeAllSignal.Dispose();
+                writeAllSignal = null;
+            }
+            if (null != deleteTask)
+            {
+                deleteTask.Dispose();
+                deleteTask = null;
+            }
+            if (null != appendTask)
+            {
+                appendTask.Dispose();
+                appendTask = null;
+            }
+            if (null != writeAllTask)
+            {
+                writeAllTask.Dispose();
+                writeAllTask = null;
+            }
         }
 
         internal static class Win32Utils

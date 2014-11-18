@@ -389,8 +389,7 @@ namespace ServiceMq
                 if (disposing)
                 {
                     //cleanup here
-                    FastFile.WriteAll(); //complete writing of queued up writes
-                    FastFile.DeleteAll(); //clean marked for deletion
+                    FastFile.Dispose(); //complete writing and deletions
                     this.outboundQueue.Stop();
                     this.inboundQueue.Stop();
                     if (null != npHost) npHost.Dispose();

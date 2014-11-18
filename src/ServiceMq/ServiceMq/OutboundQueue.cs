@@ -186,100 +186,102 @@ namespace ServiceMq
             {
                 try
                 {
-                    outgoingMessageWaitHandle.WaitOne();
-                    if (!continueProcessing) break;
-                    OutboundMessage message = null;
-                    message = mq.Dequeue();
-
-                    var attemptTime = DateTime.Now;
-                    bool fromRegularQueue = true;
-                    if (null == message)  //look for oldest in retry queues
+                    if (outgoingMessageWaitHandle.WaitOne(100))
                     {
-                        var keyWithOldest = string.Empty;
-                        var oldest = DateTime.Now;
-                        foreach (var kvp in retryQueues)
-                        {
-                            var peekMsg = kvp.Value.Peek();
-                            if (null != peekMsg && peekMsg.LastSendAttempt < oldest)
-                            {
-                                //only choosee if it is a viable retry candidate
-                                var secondsSinceLast = (attemptTime - peekMsg.LastSendAttempt).TotalSeconds;
-                                if (peekMsg.SendAttempts < secondsSinceLast)
-                                {
-                                    oldest = peekMsg.LastSendAttempt;
-                                    keyWithOldest = kvp.Key;
-                                }
-                            }
-                        }
-                        if (keyWithOldest != string.Empty)
-                        {
-                            message = retryQueues[keyWithOldest].Dequeue();
-                            fromRegularQueue = false;
-                        }
-                    }
+                        if (!continueProcessing) break;
+                        OutboundMessage message = null;
+                        message = mq.Dequeue();
 
-                    if (null == message)
-                    {
-                        //set to nonsignaled and block on WaitOne again
-                        outgoingMessageWaitHandle.Reset();
-                    }
-                    else
-                    {
-                        //process the message
-                        var dest = message.To.ToFileNameString();
-                        //check to see if this regular queue message is being sent to an address that is failing
-                        if (fromRegularQueue && retryQueues.ContainsKey(dest) && retryQueues[dest].Count > 0)
+                        var attemptTime = DateTime.Now;
+                        bool fromRegularQueue = true;
+                        if (null == message)  //look for oldest in retry queues
                         {
-                            //put regular mq msg onto retry queue to preserve order to that address
-                            retryQueues[dest].Enqueue(message.Filename, message);
-
-                            //set message to null and get oldest if it is time to retry - 
-                            message = null;
-                            var peekOld = retryQueues[dest].Peek();
-                            if (null != peekOld)
+                            var keyWithOldest = string.Empty;
+                            var oldest = DateTime.Now;
+                            foreach (var kvp in retryQueues)
                             {
-                                //should attempt if diff is more than send attempts in seconds
-                                var peekSeconds = (attemptTime - peekOld.LastSendAttempt).TotalSeconds;
-                                if (peekOld.SendAttempts < peekSeconds)
+                                var peekMsg = kvp.Value.Peek();
+                                if (null != peekMsg && peekMsg.LastSendAttempt < oldest)
                                 {
-                                    message = peekOld;
-                                    fromRegularQueue = false;
-                                }
-                            }
-                        }
-
-                        //skip if message went onto failure heap
-                        if (null != message)
-                        {
-                            //if attempts exceed X or time since sent, add to fail
-                            message.LastSendAttempt = attemptTime;
-                            message.SendAttempts++;
-                            try
-                            {
-                                SendMessage(message);
-                                LogSent(message);
-                                if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off as success
-                            }
-                            catch (Exception e)
-                            {
-                                if ((message.LastSendAttempt - message.Sent).TotalHours > 24.0)
-                                {
-                                    LogFailed(message);
-                                    if (!fromRegularQueue)
+                                    //only choosee if it is a viable retry candidate
+                                    var secondsSinceLast = (attemptTime - peekMsg.LastSendAttempt).TotalSeconds;
+                                    if (peekMsg.SendAttempts < secondsSinceLast)
                                     {
-                                        //pulls peeked obj off no more trying
-                                        retryQueues[dest].Dequeue();
+                                        oldest = peekMsg.LastSendAttempt;
+                                        keyWithOldest = kvp.Key;
                                     }
                                 }
-                                else
+                            }
+                            if (keyWithOldest != string.Empty)
+                            {
+                                message = retryQueues[keyWithOldest].Dequeue();
+                                fromRegularQueue = false;
+                            }
+                        }
+
+                        if (null == message)
+                        {
+                            //set to nonsignaled and block on WaitOne again
+                            outgoingMessageWaitHandle.Reset();
+                        }
+                        else
+                        {
+                            //process the message
+                            var dest = message.To.ToFileNameString();
+                            //check to see if this regular queue message is being sent to an address that is failing
+                            if (fromRegularQueue && retryQueues.ContainsKey(dest) && retryQueues[dest].Count > 0)
+                            {
+                                //put regular mq msg onto retry queue to preserve order to that address
+                                retryQueues[dest].Enqueue(message.Filename, message);
+
+                                //set message to null and get oldest if it is time to retry - 
+                                message = null;
+                                var peekOld = retryQueues[dest].Peek();
+                                if (null != peekOld)
                                 {
-                                    if (fromRegularQueue)
+                                    //should attempt if diff is more than send attempts in seconds
+                                    var peekSeconds = (attemptTime - peekOld.LastSendAttempt).TotalSeconds;
+                                    if (peekOld.SendAttempts < peekSeconds)
                                     {
-                                        if (!retryQueues.ContainsKey(dest)) retryQueues.Add(dest,
-                                            new CachingQueue<OutboundMessage>(this.msgDir,
-                                                OutboundMessage.ReadFromFile, "*.omq", 
-                                                maxMessagesInMemory, reorderLevel, persistMessages: false));
-                                        retryQueues[dest].Enqueue(message.Filename, message);
+                                        message = peekOld;
+                                        fromRegularQueue = false;
+                                    }
+                                }
+                            }
+
+                            //skip if message went onto failure heap
+                            if (null != message)
+                            {
+                                //if attempts exceed X or time since sent, add to fail
+                                message.LastSendAttempt = attemptTime;
+                                message.SendAttempts++;
+                                try
+                                {
+                                    SendMessage(message);
+                                    LogSent(message);
+                                    if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off as success
+                                }
+                                catch (Exception e)
+                                {
+                                    if ((message.LastSendAttempt - message.Sent).TotalHours > 24.0)
+                                    {
+                                        LogFailed(message);
+                                        if (!fromRegularQueue)
+                                        {
+                                            //pulls peeked obj off no more trying
+                                            retryQueues[dest].Dequeue();
+                                        }
+                                    }
+                                    else
+                                    {
+                                        if (fromRegularQueue)
+                                        {
+                                            if (!retryQueues.ContainsKey(dest)) retryQueues.Add(dest,
+                                                new CachingQueue<OutboundMessage>(this.msgDir,
+                                                    OutboundMessage.ReadFromFile, "*.omq",
+                                                    maxMessagesInMemory, reorderLevel, persistMessages: false));
+                                            retryQueues[dest].Enqueue(message.Filename, message);
+                                        }
                                     }
                                 }
                             }
@@ -373,7 +375,7 @@ namespace ServiceMq
                 var logFile = Path.Combine(this.failDir, fileName);
                 var line = message.ToString().ToFlatLine();
                 FastFile.AppendAllLines(logFile, new string[] { line });
-                FastFile.DeleteAsync(message.Filename);
+                FastFile.Delete(message.Filename);
             }
             catch (Exception e)
             {
@@ -393,7 +395,7 @@ namespace ServiceMq
                     var line = message.ToString().ToFlatLine();
                     FastFile.AppendAllLines(logFile, new string[] { line });
                 }
-                FastFile.DeleteAsync(message.Filename);
+                FastFile.Delete(message.Filename);
             }
             catch (Exception e)
             {
@@ -415,7 +417,7 @@ namespace ServiceMq
                             var info = new FileInfo(file);
                             if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
                             {
-                                FastFile.DeleteAsync(file);
+                                FastFile.Delete(file);
                             }
                         }
                     }
