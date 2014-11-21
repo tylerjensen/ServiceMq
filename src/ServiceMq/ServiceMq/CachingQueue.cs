@@ -18,16 +18,18 @@ namespace ServiceMq
         private readonly bool persistMessages;
         private readonly Queue<string> keysQueue;
         private readonly Queue<T> messageQueue;
-        private readonly Func<string, T> loadFromFile;
+        private readonly Func<string, FastFile, T> loadFromFile;
+        private readonly FastFile fastFile;
 
         private volatile bool reloading = false;
         private Exception reloadException = null;
         public Exception ReloadException { get { return reloadException; } }
 
-        public CachingQueue(string msgDir, Func<string, T> loadFromFile, string filePattern,
+        public CachingQueue(string msgDir, FastFile fastFile, Func<string, FastFile, T> loadFromFile, string filePattern,
             int maxMessagesInMemory, int reorderLevel, bool persistMessages = true)
         {
             this.msgDir = msgDir;
+            this.fastFile = fastFile;
             this.loadFromFile = loadFromFile;
             this.maxMessagesInMemory = maxMessagesInMemory < 128
                 ? 128
@@ -62,7 +64,7 @@ namespace ServiceMq
                     {
                         if (messageQueue.Count < maxMessagesInMemory)
                         {
-                            var msg = loadFromFile(msgFile);
+                            var msg = loadFromFile(msgFile, fastFile);
                             messageQueue.Enqueue(msg);
                         }
                         else
@@ -125,7 +127,7 @@ namespace ServiceMq
             if (persistMessages)
             {
                 var line = message.ToString();
-                FastFile.WriteAllText(key, line);
+                fastFile.WriteAllText(key, line);
             }
             lock (syncRoot)
             {
@@ -193,7 +195,7 @@ namespace ServiceMq
                                 && messageQueue.Count < maxMessagesInMemory)
                             {
                                 var key = keysQueue.Dequeue();
-                                var msg = loadFromFile(key);
+                                var msg = loadFromFile(key, fastFile);
                                 messageQueue.Enqueue(msg);
                                 loadCount++;
                             }

@@ -22,10 +22,10 @@ namespace ServiceMq
         public int SendAttempts { get; set; }
         public DateTime LastSendAttempt { get; set; }
 
-        public static OutboundMessage ReadFromFile(string fileName)
+        public static OutboundMessage ReadFromFile(string fileName, FastFile fastFile)
         {
             //idguid   address-from   address-to   senttimestamp   msgtypename   bin/str   message(base64forbin)
-            var text = FastFile.ReadAllText(fileName);
+            var text = fastFile.ReadAllText(fileName);
             var parts = text.Split('\t');
             if (parts.Length == 7)
             {

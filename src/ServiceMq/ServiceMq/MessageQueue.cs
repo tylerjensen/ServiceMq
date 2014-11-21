@@ -32,6 +32,7 @@ namespace ServiceMq
         private QueueState stateOutbound = QueueState.Running;
         private Exception stateExceptionInbound = null;
         private QueueState stateInbound = QueueState.Running;
+        private FastFile fastFile = null;
 
         public MessageQueue(string name, 
             Address address, 
@@ -42,23 +43,26 @@ namespace ServiceMq
             int connectTimeOutMs = 500,
             bool persistMessagesSentLogs = true,
             bool persistMessagesReadLogs = true,
-            int maxMessagesInMemory = 8192, int reorderLevel = 4096)
+            int maxMessagesInMemory = 8192, 
+            int reorderLevel = 4096,
+            bool persistMessagesAsynchronously = false)
         {
             this.name = name;
             this.address = address;
             this.msgDir = msgDir ?? GetExecutablePathDirectory();
             this.maxMessagesInMemory = maxMessagesInMemory;
             this.reorderLevel = reorderLevel;
+            this.fastFile = new FastFile(asyncWrites: persistMessagesAsynchronously);
 
             Directory.CreateDirectory(this.msgDir);
 
             this.connectTimeOutMs = connectTimeOutMs;
 
             //create inbound and outbound queues
-            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, 
+            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, this.fastFile,
                 hoursReadSentLogsToLive, connectTimeOutMs, persistMessagesSentLogs, 
                 maxMessagesInMemory, reorderLevel);
-            this.inboundQueue = new InboundQueue(this.name, this.msgDir, 
+            this.inboundQueue = new InboundQueue(this.name, this.msgDir, this.fastFile,
                 hoursReadSentLogsToLive, persistMessagesReadLogs, 
                 maxMessagesInMemory, reorderLevel);
 
@@ -389,11 +393,12 @@ namespace ServiceMq
                 if (disposing)
                 {
                     //cleanup here
-                    FastFile.Dispose(); //complete writing and deletions
-                    this.outboundQueue.Stop();
-                    this.inboundQueue.Stop();
+                    outboundQueue.Stop();
+                    inboundQueue.Stop();
                     if (null != npHost) npHost.Dispose();
                     if (null != tcpHost) tcpHost.Dispose();
+                    //complete writing and deletions
+                    if (null != fastFile) fastFile.Dispose(); 
                 }
             }
         }

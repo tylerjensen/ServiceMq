@@ -41,10 +41,10 @@ namespace ServiceMq
                 MessageBytes == null ? MessageString : Convert.ToBase64String(MessageBytes));
         }
 
-        public static Message ReadFromFile(string fileName)
+        public static Message ReadFromFile(string fileName, FastFile fastFile)
         {
             //id   from   sentts   receivedts   sentattempts   msgtypename   bin/str   message(binbase64)
-            var text = FastFile.ReadAllText(fileName);
+            var text = fastFile.ReadAllText(fileName);
             var parts = text.Split('\t');
             if (parts.Length == 8)
             {

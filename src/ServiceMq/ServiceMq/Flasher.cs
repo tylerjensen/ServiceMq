@@ -217,26 +217,27 @@ namespace ServiceMq
             }
         }
 
-        private Address GetOptimalAddress(Address dest)
+        private Address GetOptimalAddress(Address destAddress)
         {
-            bool chooseTcp = (dest.Transport == Transport.Both
-                                && _from.ServerName != dest.ServerName);
-            if (chooseTcp || dest.Transport == Transport.Tcp)
+            bool chooseTcp = (destAddress.Transport == Transport.Both && _from.ServerName != destAddress.ServerName);
+            if (chooseTcp || destAddress.Transport == Transport.Tcp)
             {
-                if (null == _from.IpAddress) throw new ArgumentException("Cannot send to a IP endpoint if queue does not have an IP endpoint.", "destEndPoint");
-                return new Address(dest.ServerName, dest.Port);
+                if (null == _from.IpAddress)
+                {
+                    throw new ArgumentException("Cannot send to a IP endpoint if queue does not have an IP endpoint.", "destAddress");
+                }
+                return new Address(destAddress.ServerName, destAddress.Port);
             }
-            else
+            if (null == _from.PipeName)
             {
-                if (null == _from.PipeName) throw new ArgumentException("Cannot send to a named pipe endpoint if queue does not have named pipe endpoint.", "destEndPoint");
-                return new Address(dest.PipeName);
+                throw new ArgumentException("Cannot send to a named pipe endpoint if queue does not have named pipe endpoint.", "destAddress");
             }
+            return new Address(destAddress.PipeName);
         }
-
 
         #region IDisposable Members
 
-        protected bool _disposed = false;
+        private bool _disposed = false;
 
         public void Dispose()
         {

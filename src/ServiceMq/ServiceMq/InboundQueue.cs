@@ -26,13 +26,15 @@ namespace ServiceMq
         private DateTime lastCleaned = DateTime.Now.AddDays(-10);
         private Exception stateException = null;
         private QueueState state = QueueState.Running;
+        private FastFile fastFile = null;
 
-        public InboundQueue(string name, string msgDir,
+        public InboundQueue(string name, string msgDir, FastFile fastFile,
             double hoursReadSentLogsToLive, bool persistMessagesReadLogs,
             int maxMessagesInMemory, int reorderLevel)
         {
             this.name = name;
             this.msgDir = msgDir;
+            this.fastFile = fastFile;
             this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
             this.persistMessagesReadLogs = persistMessagesReadLogs;
             this.maxMessagesInMemory = maxMessagesInMemory;
@@ -45,7 +47,7 @@ namespace ServiceMq
 
             try
             {
-                this.mq = new CachingQueue<Message>(inDir, 
+                this.mq = new CachingQueue<Message>(inDir, fastFile, 
                     Message.ReadFromFile, "*.imq", maxMessagesInMemory, reorderLevel);
             }
             catch (Exception e)
@@ -202,10 +204,10 @@ namespace ServiceMq
                         var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
                         var logFile = Path.Combine(this.readDir, fileName);
                         var line = message.ToString().ToFlatLine();
-                        FastFile.AppendAllLines(logFile, new string[] { line });
+                        fastFile.AppendAllLines(logFile, new string[] { line });
                     }
                     //File.Delete(message.Filename);
-                    FastFile.Delete(message.Filename);
+                    fastFile.Delete(message.Filename);
                 }
                 catch (Exception e)
                 {
@@ -228,7 +230,7 @@ namespace ServiceMq
                             var info = new FileInfo(file);
                             if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
                             {
-                                FastFile.Delete(file);
+                                fastFile.Delete(file);
                             }
                         }
                     }
