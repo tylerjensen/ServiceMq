@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using ServiceWire;
 using ServiceWire.NamedPipes;
+using ServiceWire.SvcStkTxt;
 using ServiceWire.TcpIp;
 using System;
 using System.Collections.Generic;
@@ -33,7 +34,7 @@ namespace ServiceMq
         public Guid Send<T>(Address dest, T message, params Address[] altDests)
         {
             var addr = GetOptimalAddress(dest);
-            string msg = SvcStkTxt.TypeSerializer.SerializeToString(message);
+            string msg = TypeSerializer.SerializeToString(message);
             try
             {
                 return SendMsg(msg, typeof(T).FullName, addr);

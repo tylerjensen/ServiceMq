@@ -6,10 +6,10 @@ using System.Runtime.InteropServices;
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
 [assembly: AssemblyTitle("ServiceMq")]
-[assembly: AssemblyDescription("A store and forward message queue for .NET.")]
+[assembly: AssemblyDescription("A store and forward message queue for .NET (.NET 3.5).")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Tyler Jensen")]
-[assembly: AssemblyProduct("ServiceMq")]
+[assembly: AssemblyProduct("ServiceMq_Net35")]
 [assembly: AssemblyCopyright("Copyright © Tyler Jensen 2014")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
@@ -20,7 +20,7 @@ using System.Runtime.InteropServices;
 [assembly: ComVisible(false)]
 
 // The following GUID is for the ID of the typelib if this project is exposed to COM
-[assembly: Guid("acc11049-922a-4595-8d7e-60bbd5502fe8")]
+[assembly: Guid("c0314282-a90c-46fd-b39a-de4f039373ce")]
 
 // Version information for an assembly consists of the following four values:
 //

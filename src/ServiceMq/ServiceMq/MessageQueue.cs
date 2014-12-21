@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using ServiceWire;
 using ServiceWire.NamedPipes;
+using ServiceWire.SvcStkTxt;
 using ServiceWire.TcpIp;
 
 namespace ServiceMq
@@ -117,7 +118,7 @@ namespace ServiceMq
         public Guid Send<T>(Address dest, T message)
         {
             var addr = GetOptimalAddress(dest);
-            string msg = SvcStkTxt.TypeSerializer.SerializeToString(message);
+            string msg = TypeSerializer.SerializeToString(message);
             return SendMsg(msg, typeof(T).FullName, addr);
         }
 
@@ -180,7 +181,7 @@ namespace ServiceMq
             {
                 addrs.Add(GetOptimalAddress(dAddr));
             }
-            string msg = SvcStkTxt.TypeSerializer.SerializeToString(message);
+            string msg = TypeSerializer.SerializeToString(message);
             return BroadcastMsg(msg, typeof(T).FullName, addrs);
         }
 

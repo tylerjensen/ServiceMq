@@ -145,7 +145,11 @@ namespace ServiceMq
             {
                 continueProcessing = false;
                 outgoingMessageWaitHandle.Set();
+#if (!NET35)
                 outgoingMessageWaitHandle.Dispose();
+#else
+                outgoingMessageWaitHandle.Close();
+#endif
                 timer.Dispose();
                 npClientPool.Dispose();
                 tcpClientPool.Dispose();

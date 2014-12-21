@@ -8,7 +8,7 @@ namespace ServiceMq.Tests
     [TestClass]
     public class BasicTests
     {
-        [TestMethod]
+        [TestMethod] 
         public void SimpleTest()
         {
             var q1Address = new Address("q1pipe");

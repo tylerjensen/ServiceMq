@@ -32,7 +32,11 @@ namespace ServiceMq
                 var msg = new OutboundMessage()
                 {
                     Filename = fileName,
+#if (!NET35)
                     Id = Guid.Parse(parts[0]),
+#else
+                    Id = new Guid(parts[0]),
+#endif
                     From = Address.FromString(parts[1]),
                     To = Address.FromString(parts[2]),
                     Sent = DateTime.ParseExact(parts[3], DtFormat, DateTimeFormatInfo.InvariantInfo),

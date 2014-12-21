@@ -16,8 +16,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServiceMq.Tests", "ServiceM
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{195DE616-60EF-4AAB-A45F-1AA02FA99F4F}"
 	ProjectSection(SolutionItems) = preProject
-		TestSettingsLocal.testsettings = TestSettingsLocal.testsettings
+		ServiceMq.snk = ServiceMq.snk
 	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServiceMq_Net35", "ServiceMq_Net35\ServiceMq_Net35.csproj", "{AB769C57-C6A0-43C6-9F34-B1B5195E7E44}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServiceMq.Tests_Net35", "ServiceMq.Tests_Net35\ServiceMq.Tests_Net35.csproj", "{840DB5F4-B3BB-4ED1-84CF-B547CB6C45D4}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -33,6 +37,14 @@ Global
 		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AB769C57-C6A0-43C6-9F34-B1B5195E7E44}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AB769C57-C6A0-43C6-9F34-B1B5195E7E44}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AB769C57-C6A0-43C6-9F34-B1B5195E7E44}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AB769C57-C6A0-43C6-9F34-B1B5195E7E44}.Release|Any CPU.Build.0 = Release|Any CPU
+		{840DB5F4-B3BB-4ED1-84CF-B547CB6C45D4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{840DB5F4-B3BB-4ED1-84CF-B547CB6C45D4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{840DB5F4-B3BB-4ED1-84CF-B547CB6C45D4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{840DB5F4-B3BB-4ED1-84CF-B547CB6C45D4}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

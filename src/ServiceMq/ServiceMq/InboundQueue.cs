@@ -89,7 +89,11 @@ namespace ServiceMq
             {
                 continueProcessing = false;
                 incomingMessageWaitHandle.Set();
+#if (!NET35)
                 incomingMessageWaitHandle.Dispose();
+#else
+                incomingMessageWaitHandle.Close();
+#endif
             }
             catch (Exception e)
             {

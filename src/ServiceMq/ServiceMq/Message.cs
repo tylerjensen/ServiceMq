@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using ServiceWire.SvcStkTxt;
 
 namespace ServiceMq
 {
@@ -23,8 +24,12 @@ namespace ServiceMq
 
         public T To<T>()
         {
+#if (!NET35)
             if (string.IsNullOrWhiteSpace(MessageString)) return default(T);
-            return SvcStkTxt.TypeSerializer.DeserializeFromString<T>(MessageString);
+#else
+            if (string.IsNullOrEmpty(MessageString)) return default(T);
+#endif
+            return TypeSerializer.DeserializeFromString<T>(MessageString);
         }
 
         //id   from   sentts   receivedts   sentattempts   msgtypename   bin/str   message(binbase64)
@@ -51,7 +56,11 @@ namespace ServiceMq
                 var msg = new Message()
                 {
                     Filename = fileName,
+#if (!NET35)
                     Id = Guid.Parse(parts[0]),
+#else
+                    Id = new Guid(parts[0]),
+#endif
                     From = Address.FromString(parts[1]),
                     Sent = DateTime.ParseExact(parts[2], DtFormat, DateTimeFormatInfo.InvariantInfo),
                     Received = DateTime.ParseExact(parts[3], DtFormat, DateTimeFormatInfo.InvariantInfo),

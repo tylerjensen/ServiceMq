@@ -25,8 +25,7 @@ namespace ServiceMq
             new ConcurrentDictionary<string, ConcurrentQueue<string[]>>();
         private ConcurrentDictionary<string, byte> pendingWrites = 
             new ConcurrentDictionary<string, byte>();
-        private ConcurrentQueue<Tuple<string, string>> writeTextQueue = 
-            new ConcurrentQueue<Tuple<string, string>>(); 
+        private ConcurrentQueue<FileText> writeTextQueue = new ConcurrentQueue<FileText>(); 
         private ConcurrentDictionary<string, DateTime> lastAppendTimes =
             new ConcurrentDictionary<string, DateTime>();
 
@@ -82,7 +81,7 @@ namespace ServiceMq
             if (asyncWrites)
             {
                 pendingWrites.TryAdd(fileName, 0);
-                writeTextQueue.Enqueue(new Tuple<string, string>(fileName, text));
+                writeTextQueue.Enqueue(new FileText(fileName, text));
                 if (null == writeAllTask)
                 {
                     lock (syncRoot)
@@ -112,12 +111,12 @@ namespace ServiceMq
                     writeAllSignal.Reset();
                     while (!writeTextQueue.IsEmpty)
                     {
-                        Tuple<string, string> data;
+                        FileText data;
                         if (writeTextQueue.TryDequeue(out data))
                         {
                             try
                             {
-                                File.WriteAllText(data.Item1, data.Item2);
+                                File.WriteAllText(data.FileName, data.Text);
                             }
                             catch (Exception e)
                             {
@@ -126,7 +125,7 @@ namespace ServiceMq
                             finally
                             {
                                 byte s;
-                                pendingWrites.TryRemove(data.Item1, out s);
+                                pendingWrites.TryRemove(data.FileName, out s);
                             }
                         }
                     }
@@ -157,7 +156,11 @@ namespace ServiceMq
             }
             else
             {
+#if (!NET35)
                 File.AppendAllLines(fileName, lines);
+#else
+                File.AppendAllText(fileName, string.Join("\r\n", lines));
+#endif
             }
         }
 
@@ -191,7 +194,11 @@ namespace ServiceMq
                                 //we have all lines, write in one write to file
                                 try
                                 {
+#if (!NET35)
                                     File.AppendAllLines(file, lines);
+#else
+                                    File.AppendAllText(file, string.Join("\r\n", lines.ToArray()));
+#endif
                                 }
                                 catch (Exception ex)
                                 {
@@ -311,6 +318,7 @@ namespace ServiceMq
                     if (null != deleteTask) deleteTask.Wait(2000);
                     if (null != appendTask) appendTask.Wait(2000);
                     if (null != writeAllTask) writeAllTask.Wait(2000);
+#if (!NET35)
                     if (null != deleteSignal)
                     {
                         deleteSignal.Dispose();
@@ -326,6 +334,23 @@ namespace ServiceMq
                         writeAllSignal.Dispose();
                         writeAllSignal = null;
                     }
+#else
+                    if (null != deleteSignal)
+                    {
+                        deleteSignal.Close();
+                        deleteSignal = null;
+                    }
+                    if (null != appendSignal)
+                    {
+                        appendSignal.Close();
+                        appendSignal = null;
+                    }
+                    if (null != writeAllSignal)
+                    {
+                        writeAllSignal.Close();
+                        writeAllSignal = null;
+                    }
+#endif
                     if (null != deleteTask)
                     {
                         deleteTask.Dispose();

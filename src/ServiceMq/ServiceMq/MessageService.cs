@@ -22,7 +22,11 @@ namespace ServiceMq
 
         public int EnqueueString(Guid id, string from, DateTime sentTime, int sendAttempt, string messageTypeName, string message)
         {
+#if (!NET35)
             if (string.IsNullOrWhiteSpace(message)) return 0;
+#else
+            if (string.IsNullOrEmpty(message)) return 0;
+#endif
             var msg = new Message
             {
                 Id = id,
