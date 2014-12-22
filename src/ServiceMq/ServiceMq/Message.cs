@@ -4,7 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
-using ServiceWire.SvcStkTxt;
+using Newtonsoft.Json;
 
 namespace ServiceMq
 {
@@ -22,6 +22,11 @@ namespace ServiceMq
         public byte[] MessageBytes { get; set; }
         public string MessageString { get; set; }
 
+        private JsonSerializerSettings settings = new JsonSerializerSettings
+        {
+            ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore
+        };
+
         public T To<T>()
         {
 #if (!NET35)
@@ -29,7 +34,7 @@ namespace ServiceMq
 #else
             if (string.IsNullOrEmpty(MessageString)) return default(T);
 #endif
-            return TypeSerializer.DeserializeFromString<T>(MessageString);
+            return JsonConvert.DeserializeObject<T>(MessageString, settings);
         }
 
         //id   from   sentts   receivedts   sentattempts   msgtypename   bin/str   message(binbase64)

@@ -1,7 +1,7 @@
 ﻿using System.IO;
+using Newtonsoft.Json;
 using ServiceWire;
 using ServiceWire.NamedPipes;
-using ServiceWire.SvcStkTxt;
 using ServiceWire.TcpIp;
 using System;
 using System.Collections.Generic;
@@ -31,10 +31,15 @@ namespace ServiceMq
             this.tcpClientPool = new PooledDictionary<string, TcpClient<IMessageService>>();
         }
 
+        private JsonSerializerSettings settings = new JsonSerializerSettings
+        {
+            ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore
+        };
+
         public Guid Send<T>(Address dest, T message, params Address[] altDests)
         {
             var addr = GetOptimalAddress(dest);
-            string msg = TypeSerializer.SerializeToString(message);
+            string msg = JsonConvert.SerializeObject(message, settings);
             try
             {
                 return SendMsg(msg, typeof(T).FullName, addr);

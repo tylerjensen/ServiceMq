@@ -19,7 +19,7 @@ namespace ServiceMq.Tests
                 q1.Send(q2Address, "hello world");
                 var msg = q2.Receive();
                 Assert.IsNotNull(msg);
-                Assert.AreEqual(msg.MessageString, "hello world");
+                Assert.AreEqual(msg.To<string>(), "hello world");
             }
         }
 
@@ -35,7 +35,7 @@ namespace ServiceMq.Tests
                 q1.Send(q2Address, "hello world");
                 var msg = q2.Receive();
                 Assert.IsNotNull(msg);
-                Assert.AreEqual(msg.MessageString, "hello world");
+                Assert.AreEqual(msg.To<string>(), "hello world");
             }
             var read = Directory.GetFiles(@"c:\temp\qn2\read", "*.log");
             var sent = Directory.GetFiles(@"c:\temp\qn2\sent", "*.log");
@@ -58,7 +58,7 @@ namespace ServiceMq.Tests
                 q1.Send(q2Address, "hello world");
                 var msg = q2.Receive();
                 Assert.IsNotNull(msg);
-                Assert.AreEqual(msg.MessageString, "hello world");
+                Assert.AreEqual(msg.To<string>(), "hello world");
             }
         }
 

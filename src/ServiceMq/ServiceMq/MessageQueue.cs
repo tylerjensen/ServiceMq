@@ -6,9 +6,9 @@ using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using Newtonsoft.Json;
 using ServiceWire;
 using ServiceWire.NamedPipes;
-using ServiceWire.SvcStkTxt;
 using ServiceWire.TcpIp;
 
 namespace ServiceMq
@@ -115,10 +115,15 @@ namespace ServiceMq
             this.outboundQueue.ClearState();
         }
 
+        private JsonSerializerSettings settings = new JsonSerializerSettings
+        {
+            ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore
+        };
+
         public Guid Send<T>(Address dest, T message)
         {
             var addr = GetOptimalAddress(dest);
-            string msg = TypeSerializer.SerializeToString(message);
+            string msg = JsonConvert.SerializeObject(message, settings);
             return SendMsg(msg, typeof(T).FullName, addr);
         }
 
@@ -181,7 +186,7 @@ namespace ServiceMq
             {
                 addrs.Add(GetOptimalAddress(dAddr));
             }
-            string msg = TypeSerializer.SerializeToString(message);
+            string msg = JsonConvert.SerializeObject(message, settings);
             return BroadcastMsg(msg, typeof(T).FullName, addrs);
         }
 

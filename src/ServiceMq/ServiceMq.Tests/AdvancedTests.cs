@@ -20,7 +20,7 @@ namespace ServiceMq.Tests
                 q1.Send(q2Address, "hello\r\nworld");
                 var msg = q2.Receive();
                 Assert.IsNotNull(msg);
-                Assert.AreEqual(msg.MessageString, "hello\r\nworld");
+                Assert.AreEqual(msg.To<string>(), "hello\r\nworld");
             }
         }
 
@@ -38,10 +38,10 @@ namespace ServiceMq.Tests
                 {
                     var msg = q2.Receive();
                     Assert.IsNotNull(msg);
-                    Assert.AreEqual(msg.MessageString, "hello world 1");
+                    Assert.AreEqual(msg.To<string>(), "hello world 1");
                     msg = q2.Receive();
                     Assert.IsNotNull(msg);
-                    Assert.AreEqual(msg.MessageString, "hello world 2");
+                    Assert.AreEqual(msg.To<string>(), "hello world 2");
                 }
             }
         }
@@ -66,13 +66,13 @@ namespace ServiceMq.Tests
                     }, "hello\r\nworld");
                 var msg2 = q2.Receive();
                 Assert.IsNotNull(msg2);
-                Assert.AreEqual(msg2.MessageString, "hello\r\nworld");
+                Assert.AreEqual(msg2.To<string>(), "hello\r\nworld");
                 var msg3 = q3.Receive();
                 Assert.IsNotNull(msg3);
-                Assert.AreEqual(msg3.MessageString, "hello\r\nworld");
+                Assert.AreEqual(msg3.To<string>(), "hello\r\nworld");
                 var msg4 = q4.Receive();
                 Assert.IsNotNull(msg4);
-                Assert.AreEqual(msg4.MessageString, "hello\r\nworld");
+                Assert.AreEqual(msg4.To<string>(), "hello\r\nworld");
 
                 Assert.AreEqual(msg2.Id, msg3.Id);
                 Assert.AreEqual(msg3.Id, msg4.Id);
@@ -171,12 +171,12 @@ namespace ServiceMq.Tests
                 Thread.Sleep(150);
                 var msg = q2.ReceiveBulk(2);
                 Assert.IsNotNull(msg);
-                Assert.AreEqual(msg[0].MessageString, "hello world 1");
-                Assert.AreEqual(msg[1].MessageString, "hello world 2");
+                Assert.AreEqual(msg[0].To<string>(), "hello world 1");
+                Assert.AreEqual(msg[1].To<string>(), "hello world 2");
                 msg = q2.ReceiveBulk(2);
                 Assert.IsNotNull(msg);
-                Assert.AreEqual(msg[0].MessageString, "hello world 3");
-                Assert.AreEqual(msg[1].MessageString, "hello world 4");
+                Assert.AreEqual(msg[0].To<string>(), "hello world 3");
+                Assert.AreEqual(msg[1].To<string>(), "hello world 4");
             }
         }
 
