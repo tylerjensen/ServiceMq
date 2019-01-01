@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netcoreapp2.2;netcoreapp2.0;net462</TargetFrameworks>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <Authors>Tyler Jensen</Authors>
+    <Company />
+    <PackageIconUrl>http://www.tsjensen.com/blog/image.axd?picture=2014/11/swlogo_sm.png</PackageIconUrl>
+    <PackageProjectUrl>https://github.com/tylerjensen/ServiceMq</PackageProjectUrl>
+    <PackageLicenseUrl>http://www.apache.org/licenses/LICENSE-2.0</PackageLicenseUrl>
+    <Copyright>Tyler Jensen 2013-2018</Copyright>
+    <Version>5.1.0</Version>
+    <Description>A store and forward message queue for .NET. based on ServiceWire.</Description>
+    <PackageTags>Message Queue Messaging Store Forward</PackageTags>
+    <PackageReleaseNotes>Updated to NetCoreApp 2.0 and 2.2 and .NET Framework 4.62 and ServiceWire 5.1.0. Bumped version to match ServiceWire version.</PackageReleaseNotes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ServiceWire" Version="5.1.0" />
+  </ItemGroup>
+
+</Project>

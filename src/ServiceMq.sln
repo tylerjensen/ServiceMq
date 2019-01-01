@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.168
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServiceMq", "ServiceMq\ServiceMq.csproj", "{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServiceMq.Tests", "ServiceMq.Tests\ServiceMq.Tests.csproj", "{E2765137-D4F0-4CDA-A458-691F7BF10C9B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DAB36DFA-764F-4703-AB1C-3D0B79A9085E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E2765137-D4F0-4CDA-A458-691F7BF10C9B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E0396276-F4CD-4C2C-88FA-755C6645FDCA}
+	EndGlobalSection
+EndGlobal

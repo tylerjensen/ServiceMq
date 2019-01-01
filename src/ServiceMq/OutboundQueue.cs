@@ -267,7 +267,7 @@ namespace ServiceMq
                                     LogSent(message);
                                     if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off as success
                                 }
-                                catch (Exception e)
+                                catch
                                 {
                                     if ((message.LastSendAttempt - message.Sent).TotalHours > 24.0)
                                     {
