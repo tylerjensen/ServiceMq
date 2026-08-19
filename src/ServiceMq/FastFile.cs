@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,8 +22,8 @@ namespace ServiceMq
             new ConcurrentQueue<string>();
         private ConcurrentDictionary<string, ConcurrentQueue<string[]>> appendQueues =
             new ConcurrentDictionary<string, ConcurrentQueue<string[]>>();
-        private ConcurrentDictionary<string, byte> pendingWrites = 
-            new ConcurrentDictionary<string, byte>();
+        private ConcurrentDictionary<string, int> pendingWrites =
+            new ConcurrentDictionary<string, int>();
         private ConcurrentQueue<FileText> writeTextQueue = new ConcurrentQueue<FileText>(); 
         private ConcurrentDictionary<string, DateTime> lastAppendTimes =
             new ConcurrentDictionary<string, DateTime>();
@@ -80,7 +79,7 @@ namespace ServiceMq
         {
             if (asyncWrites)
             {
-                pendingWrites.TryAdd(fileName, 0);
+                pendingWrites.AddOrUpdate(fileName, 1, (key, count) => count + 1);
                 writeTextQueue.Enqueue(new FileText(fileName, text));
                 if (null == writeAllTask)
                 {
@@ -98,13 +97,13 @@ namespace ServiceMq
             }
             else
             {
-                File.WriteAllText(fileName, text);
+                WriteAtomic(fileName, text);
             }
         }
 
         private void ProcessWriteAll()
         {
-            while (continueProcessing)
+            while (continueProcessing || !writeTextQueue.IsEmpty)
             {
                 if (writeAllSignal.WaitOne(100))
                 {
@@ -116,7 +115,7 @@ namespace ServiceMq
                         {
                             try
                             {
-                                File.WriteAllText(data.FileName, data.Text);
+                                WriteAtomic(data.FileName, data.Text);
                             }
                             catch (Exception e)
                             {
@@ -124,8 +123,16 @@ namespace ServiceMq
                             }
                             finally
                             {
-                                byte s;
-                                pendingWrites.TryRemove(data.FileName, out s);
+                                int remaining;
+                                while (pendingWrites.TryGetValue(data.FileName, out remaining))
+                                {
+                                    if (remaining <= 1)
+                                    {
+                                        int removed;
+                                        if (pendingWrites.TryRemove(data.FileName, out removed)) break;
+                                    }
+                                    else if (pendingWrites.TryUpdate(data.FileName, remaining - 1, remaining)) break;
+                                }
                             }
                         }
                     }
@@ -166,7 +173,7 @@ namespace ServiceMq
 
         private void ProcessAppends()
         {
-            while (continueProcessing)
+            while (continueProcessing || appendQueues.Values.Any(x => !x.IsEmpty))
             {
                 if (appendSignal.WaitOne(100))
                 {
@@ -202,7 +209,7 @@ namespace ServiceMq
                                 }
                                 catch (Exception ex)
                                 {
-                                    lastWriteAllException = ex;
+                                    lastAppendException = ex;
                                 }
 
                                 //see if queue should be retired
@@ -220,7 +227,7 @@ namespace ServiceMq
                     }
                     catch (Exception e)
                     {
-                        lastWriteAllException = e;
+                        lastAppendException = e;
                     }
                 }
             }
@@ -253,7 +260,7 @@ namespace ServiceMq
 
         private void ProcessDeletes()
         {
-            while (continueProcessing)
+            while (continueProcessing || !deleteQueue.IsEmpty)
             {
                 if (deleteSignal.WaitOne(100))
                 {
@@ -288,11 +295,30 @@ namespace ServiceMq
 
         private void DeleteFile(string fileName)
         {
-            if (Win32Utils.DeleteFile(fileName)) return;
-            int lastWin32Error = Marshal.GetLastWin32Error();
-            if (lastWin32Error == 2)
-                return;
-            throw new IOException("Delete failed", lastWin32Error);
+            if (File.Exists(fileName)) File.Delete(fileName);
+        }
+
+        private static void WriteAtomic(string fileName, string text)
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(fileName));
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            var temporary = fileName + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                {
+                    writer.Write(text ?? string.Empty);
+                    writer.Flush();
+                    stream.Flush(true);
+                }
+                if (File.Exists(fileName)) File.Replace(temporary, fileName, null);
+                else File.Move(temporary, fileName);
+            }
+            finally
+            {
+                if (File.Exists(temporary)) File.Delete(temporary);
+            }
         }
 
         #region IDisposable
@@ -315,9 +341,12 @@ namespace ServiceMq
                 {
                     //cleanup here
                     continueProcessing = false;
-                    if (null != deleteTask) deleteTask.Wait(2000);
-                    if (null != appendTask) appendTask.Wait(2000);
-                    if (null != writeAllTask) writeAllTask.Wait(2000);
+                    if (null != deleteSignal) deleteSignal.Set();
+                    if (null != appendSignal) appendSignal.Set();
+                    if (null != writeAllSignal) writeAllSignal.Set();
+                    if (null != deleteTask) deleteTask.Wait();
+                    if (null != appendTask) appendTask.Wait();
+                    if (null != writeAllTask) writeAllTask.Wait();
 #if (!NET35)
                     if (null != deleteSignal)
                     {
@@ -372,10 +401,5 @@ namespace ServiceMq
 
         #endregion
 
-        internal static class Win32Utils
-        {
-            [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true, BestFitMapping = false)]
-            internal static extern bool DeleteFile(string path);
-        }
     }
 }

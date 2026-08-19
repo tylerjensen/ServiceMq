@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ServiceMq\ServiceMq.csproj" />
+    <ProjectReference Include="..\ServiceMq.Sqlite\ServiceMq.Sqlite.csproj" />
   </ItemGroup>
 
 </Project>

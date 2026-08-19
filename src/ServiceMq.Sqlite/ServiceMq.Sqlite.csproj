@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <Authors>Tyler Jensen</Authors>
+    <Version>7.0.0</Version>
+    <Description>SQLite storage provider for ServiceMq.</Description>
+    <PackageTags>Message Queue Messaging Store Forward SQLite</PackageTags>
+    <PackageProjectUrl>https://github.com/tylerjensen/ServiceMq</PackageProjectUrl>
+    <PackageLicenseFile>License.txt</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.29" />
+    <ProjectReference Include="..\ServiceMq\ServiceMq.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\License.txt" Pack="true" PackagePath="" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="" />
+    <None Include="..\..\docs\**\*" Pack="true" PackagePath="docs\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 300" role="img" aria-labelledby="title desc">
+  <title id="title">First ServiceMq flow</title><desc id="desc">A checkout process queues an order, sends it through a named pipe, and the orders process handles the durably stored message.</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#475569"/></marker><style>.h{font:700 18px system-ui,sans-serif;fill:#0f172a}.t{font:600 15px system-ui,sans-serif;fill:#0f172a}.s{font:13px system-ui,sans-serif;fill:#475569}.b{stroke-width:2;rx:14}.l{stroke:#475569;stroke-width:3;fill:none;marker-end:url(#a)}</style></defs>
+  <rect width="920" height="300" rx="24" fill="#f8fafc"/><text x="460" y="38" text-anchor="middle" class="h">Your first local durable message</text>
+  <rect x="35" y="92" width="170" height="92" class="b" fill="#dbeafe" stroke="#2563eb"/><text x="120" y="128" text-anchor="middle" class="h">Checkout</text><text x="120" y="153" text-anchor="middle" class="s">Send(OrderPlaced)</text>
+  <rect x="255" y="92" width="150" height="92" class="b" fill="#dcfce7" stroke="#16a34a"/><text x="330" y="128" text-anchor="middle" class="t">Local store</text><text x="330" y="153" text-anchor="middle" class="s">survives restart</text>
+  <rect x="455" y="92" width="150" height="92" class="b" fill="#fef3c7" stroke="#d97706"/><text x="530" y="128" text-anchor="middle" class="t">Named pipe</text><text x="530" y="153" text-anchor="middle" class="s">same machine</text>
+  <rect x="655" y="92" width="230" height="92" class="b" fill="#ede9fe" stroke="#7c3aed"/><text x="770" y="128" text-anchor="middle" class="h">Orders</text><text x="770" y="153" text-anchor="middle" class="s">Accept → handle → acknowledge</text>
+  <path d="M205 138h45M405 138h45M605 138h45" class="l"/>
+  <text x="460" y="236" text-anchor="middle" class="s">Start either process first: durable storage holds work while its peer is unavailable.</text>
+</svg>

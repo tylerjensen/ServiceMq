@@ -1,6 +1,5 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -8,182 +7,134 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using ServiceWire;
 using ServiceWire.NamedPipes;
 using ServiceWire.TcpIp;
-using ServiceWire;
 
 namespace ServiceMq
 {
-    public enum QueueState
-    {
-        Running,
-        Cautioned,
-        Failed
-    }
+    public enum QueueState { Running, Cautioned, Failed }
 
-    internal class OutboundQueue
+    internal sealed class OutboundQueue
     {
-        private const string DtFormat = "yyyyMMddHHmmssfff";
-
-        private readonly CachingQueue<OutboundMessage> mq;
-        private readonly Dictionary<string, CachingQueue<OutboundMessage>> retryQueues;
-        private readonly string msgDir;
-        private readonly string outDir;
-        private readonly string sentDir;
-        private readonly string failDir;
-        private readonly string name;
+        private readonly CachingQueue<OutboundMessage> queue;
+        private readonly Dictionary<string, CachingQueue<OutboundMessage>> retryQueues =
+            new Dictionary<string, CachingQueue<OutboundMessage>>();
+        private readonly IMessageStore store;
+        private readonly StorageOptions storageOptions;
+        private readonly DeliveryOptions deliveryOptions;
         private readonly int connectTimeOutMs;
-        private readonly bool persistMessagesSentLogs;
         private readonly int maxMessagesInMemory;
         private readonly int reorderLevel;
-
+        private readonly ManualResetEvent outgoingSignal = new ManualResetEvent(false);
+        private readonly Timer timer;
+        private readonly Task sendTask;
+        private readonly PooledDictionary<string, NpClient<IMessageService>> npClientPool =
+            new PooledDictionary<string, NpClient<IMessageService>>();
+        private readonly PooledDictionary<string, TcpClient<IMessageService>> tcpClientPool =
+            new PooledDictionary<string, TcpClient<IMessageService>>();
         private volatile bool continueProcessing = true;
-        private ManualResetEvent outgoingMessageWaitHandle = new ManualResetEvent(false);
-        private readonly Timer timer = null;
-        private readonly double hoursReadSentLogsToLive;
-        private int tcount = 0;
-        private DateTime lastCleaned = DateTime.Now.AddDays(-10);
-        private Exception stateException = null;
+        private long sequence;
+        private Exception stateException;
         private QueueState state = QueueState.Running;
-        private FastFile fastFile = null;
 
-        private readonly PooledDictionary<string, NpClient<IMessageService>> npClientPool = null;
-        private readonly PooledDictionary<string, TcpClient<IMessageService>> tcpClientPool = null;
-
-        public OutboundQueue(string name, string msgDir, FastFile fastFile,
-            double hoursReadSentLogsToLive, int connectTimeOutMs, bool persistMessagesSentLogs,
-            int maxMessagesInMemory, int reorderLevel)
+        public OutboundQueue(IMessageStore store, StorageOptions storageOptions, DeliveryOptions deliveryOptions,
+            int connectTimeOutMs, int maxMessagesInMemory, int reorderLevel)
         {
-            this.name = name;
-            this.msgDir = msgDir;
-            this.fastFile = fastFile;
-            this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
+            this.store = store;
+            this.storageOptions = storageOptions;
+            this.deliveryOptions = deliveryOptions;
             this.connectTimeOutMs = connectTimeOutMs;
-            this.persistMessagesSentLogs = persistMessagesSentLogs;
             this.maxMessagesInMemory = maxMessagesInMemory;
             this.reorderLevel = reorderLevel;
-
-            this.outDir = Path.Combine(msgDir, "out");
-            this.sentDir = Path.Combine(msgDir, "sent");
-            this.failDir = Path.Combine(msgDir, "fail");
-            Directory.CreateDirectory(this.outDir);
-            Directory.CreateDirectory(this.sentDir);
-            Directory.CreateDirectory(this.failDir);
-
-            try
-            {
-                this.mq = new CachingQueue<OutboundMessage>(outDir, fastFile, OutboundMessage.ReadFromFile, "*.omq", 
-                    maxMessagesInMemory, reorderLevel);
-            }
-            catch (Exception e)
-            {
-                this.stateException = e;
-                this.state = QueueState.Failed;
-                throw; //be sure to bubble this one up
-            }
-            this.retryQueues = new Dictionary<string, CachingQueue<OutboundMessage>>();
-
-            this.npClientPool = new PooledDictionary<string, NpClient<IMessageService>>();
-            this.tcpClientPool = new PooledDictionary<string, TcpClient<IMessageService>>();
-
-            //kick off sending thread
-            Task.Factory.StartNew(SendMessages, TaskCreationOptions.LongRunning);
-
-            // signal if msgs were read from disk
-            if (mq.Count > 0)
-            {
-                outgoingMessageWaitHandle.Set();
-            }
-
-
-            //fire send loop every two seconds to prevent failing messages from hanging up
-            this.timer = new Timer(SpinSending, null, 2000, 2000);
+            queue = new CachingQueue<OutboundMessage>(store, StorageArea.Outgoing, ".omq",
+                OutboundMessage.Deserialize, x => x.ToString(), maxMessagesInMemory, reorderLevel, storageOptions.Durability);
+            sendTask = Task.Factory.StartNew(SendMessages, CancellationToken.None,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            if (queue.Count > 0) outgoingSignal.Set();
+            timer = new Timer(x => outgoingSignal.Set(), null, 1000, 1000);
         }
 
         public long Count
         {
             get
             {
-                long count = mq.Count;
-                foreach (var kvp in retryQueues) count += kvp.Value.Count;
-                return count;
+                lock (retryQueues)
+                {
+                    long count = queue.Count;
+                    foreach (var retry in retryQueues.Values) count += retry.Count;
+                    return count;
+                }
             }
         }
 
-        public Exception StateException
-        {
-            get { return stateException; }
-        }
-
-        public QueueState State
-        {
-            get { return state; }
-        }
-
-        public void ClearState()
-        {
-            stateException = null;
-            state = QueueState.Running;
-        }
-
-        private void SpinSending(object state)
-        {
-            try
-            {
-                outgoingMessageWaitHandle.Set();
-            }
-            catch (Exception e)
-            {
-                this.stateException = e;
-                this.state = QueueState.Cautioned;
-            }
-        }
+        public Exception StateException { get { return stateException ?? queue.ReloadException ?? store.LastException; } }
+        public QueueState State { get { return state == QueueState.Failed ? state : StateException == null ? state : QueueState.Cautioned; } }
+        public void ClearState() { stateException = null; state = QueueState.Running; queue.ClearException(); store.ClearException(); }
 
         public void Stop()
         {
-            try
-            {
-                continueProcessing = false;
-                outgoingMessageWaitHandle.Set();
-#if (!NET35)
-                outgoingMessageWaitHandle.Dispose();
-#else
-                outgoingMessageWaitHandle.Close();
-#endif
-                timer.Dispose();
-                npClientPool.Dispose();
-                tcpClientPool.Dispose();
-            }
-            catch (Exception e)
-            {
-                this.stateException = e;
-                this.state = QueueState.Failed;
-                throw; //bubble it up
-            }
+            continueProcessing = false;
+            timer.Dispose();
+            outgoingSignal.Set();
+            if (!sendTask.Wait(5000)) stateException = new TimeoutException("The outbound queue did not stop within five seconds.");
+            npClientPool.Dispose();
+            tcpClientPool.Dispose();
+            outgoingSignal.Dispose();
         }
 
-        public void Enqueue(OutboundMessage msg)
+        public void Enqueue(OutboundMessage message)
         {
-            //write to q file for that address
-            //yyyyMMddHHmmssfff-16bit-from-to-ipport-or-pipename
-            //20140324142165412-0415-010-042-024-155-08746-pipename.omq
+            var key = NewKey(".omq");
+            message.Filename = key;
+            queue.Enqueue(key, message);
+            outgoingSignal.Set();
+        }
 
-            //assure no possibility of a duplicate
-            var loc = Interlocked.Increment(ref tcount);
+        public IReadOnlyList<DeadLetter> GetDeadLetters()
+        {
+            var result = new List<DeadLetter>();
+            foreach (var key in store.GetKeys(StorageArea.DeadLetter).Where(x => x.EndsWith(".dlq", StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    string reason;
+                    var message = ParseDeadLetter(key, store.Read(StorageArea.DeadLetter, key).Value, out reason);
+                    result.Add(new DeadLetter
+                    {
+                        Key = key,
+                        MessageId = message.Id,
+                        Destination = message.To,
+                        Sent = message.Sent,
+                        Attempts = message.SendAttempts,
+                        MessageTypeName = message.MessageTypeName,
+                        Reason = reason
+                    });
+                }
+                catch (Exception ex) { stateException = ex; }
+            }
+            return result;
+        }
 
-            var fileName = string.Format("{0}-{1}-{2}.omq",
-                msg.Sent.ToString(DtFormat),
-                loc.ToString("0000"),
-                msg.To.ToFileNameString());
+        public bool ReplayDeadLetter(string key)
+        {
+            if (!store.Contains(StorageArea.DeadLetter, key)) return false;
+            string reason;
+            var message = ParseDeadLetter(key, store.Read(StorageArea.DeadLetter, key).Value, out reason);
+            message.SendAttempts = 0;
+            message.LastSendAttempt = default(DateTime);
+            message.Filename = NewKey(".omq");
+            queue.Enqueue(message.Filename, message);
+            store.Delete(StorageArea.DeadLetter, key);
+            outgoingSignal.Set();
+            return true;
+        }
 
-            msg.Filename = Path.Combine(this.outDir, fileName);
-            mq.Enqueue(msg.Filename, msg);
-
-            //increment and roll tcount - max 9000
-            if (loc > 9000) Interlocked.Exchange(ref tcount, 0);
-
-            //signal item to send
-            outgoingMessageWaitHandle.Set();
+        public bool DeleteDeadLetter(string key)
+        {
+            if (!store.Contains(StorageArea.DeadLetter, key)) return false;
+            store.Delete(StorageArea.DeadLetter, key);
+            return true;
         }
 
         private void SendMessages()
@@ -192,248 +143,183 @@ namespace ServiceMq
             {
                 try
                 {
-                    if (outgoingMessageWaitHandle.WaitOne(100))
+                    if (!outgoingSignal.WaitOne(100)) continue;
+                    if (!continueProcessing) break;
+                    var message = queue.Dequeue();
+                    var fromRegularQueue = true;
+                    if (message == null)
                     {
-                        if (!continueProcessing) break;
-                        OutboundMessage message = null;
-                        message = mq.Dequeue();
+                        message = GetRetryCandidate();
+                        fromRegularQueue = false;
+                    }
+                    if (message == null)
+                    {
+                        outgoingSignal.Reset();
+                        continue;
+                    }
 
-                        var attemptTime = DateTime.Now;
-                        bool fromRegularQueue = true;
-                        if (null == message)  //look for oldest in retry queues
+                    var destination = message.To.ToFileNameString();
+                    CachingQueue<OutboundMessage> retryQueue;
+                    lock (retryQueues) retryQueues.TryGetValue(destination, out retryQueue);
+                    if (fromRegularQueue && retryQueue != null && retryQueue.Count > 0)
+                    {
+                        retryQueue.ReEnqueue(message.Filename, message);
+                        continue;
+                    }
+
+                    message.LastSendAttempt = DateTime.UtcNow;
+                    message.SendAttempts++;
+                    store.Write(StorageArea.Outgoing, message.Filename, message.ToString(), storageOptions.Durability);
+                    try
+                    {
+                        SendMessage(message);
+                        LogSent(message);
+                        if (!fromRegularQueue) retryQueue.Dequeue();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (ShouldDeadLetter(message))
                         {
-                            var keyWithOldest = string.Empty;
-                            var oldest = DateTime.Now;
-                            foreach (var kvp in retryQueues)
-                            {
-                                var peekMsg = kvp.Value.Peek();
-                                if (null != peekMsg && peekMsg.LastSendAttempt < oldest)
-                                {
-                                    //only choosee if it is a viable retry candidate
-                                    var secondsSinceLast = (attemptTime - peekMsg.LastSendAttempt).TotalSeconds;
-                                    if (peekMsg.SendAttempts < secondsSinceLast)
-                                    {
-                                        oldest = peekMsg.LastSendAttempt;
-                                        keyWithOldest = kvp.Key;
-                                    }
-                                }
-                            }
-                            if (keyWithOldest != string.Empty)
-                            {
-                                message = retryQueues[keyWithOldest].Dequeue();
-                                fromRegularQueue = false;
-                            }
+                            DeadLetterMessage(message, ex);
+                            if (!fromRegularQueue) retryQueue.Dequeue();
                         }
-
-                        if (null == message)
+                        else if (fromRegularQueue)
                         {
-                            //set to nonsignaled and block on WaitOne again
-                            outgoingMessageWaitHandle.Reset();
-                        }
-                        else
-                        {
-                            //process the message
-                            var dest = message.To.ToFileNameString();
-                            //check to see if this regular queue message is being sent to an address that is failing
-                            if (fromRegularQueue && retryQueues.ContainsKey(dest) && retryQueues[dest].Count > 0)
+                            lock (retryQueues)
                             {
-                                //put regular mq msg onto retry queue to preserve order to that address
-                                retryQueues[dest].Enqueue(message.Filename, message);
-
-                                //set message to null and get oldest if it is time to retry - 
-                                message = null;
-                                var peekOld = retryQueues[dest].Peek();
-                                if (null != peekOld)
+                                if (!retryQueues.TryGetValue(destination, out retryQueue))
                                 {
-                                    //should attempt if diff is more than send attempts in seconds
-                                    var peekSeconds = (attemptTime - peekOld.LastSendAttempt).TotalSeconds;
-                                    if (peekOld.SendAttempts < peekSeconds)
-                                    {
-                                        message = peekOld;
-                                        fromRegularQueue = false;
-                                    }
+                                    retryQueue = new CachingQueue<OutboundMessage>(store, StorageArea.Outgoing, ".omq",
+                                        OutboundMessage.Deserialize, x => x.ToString(), maxMessagesInMemory, reorderLevel,
+                                        storageOptions.Durability, false);
+                                    retryQueues.Add(destination, retryQueue);
                                 }
-                            }
-
-                            //skip if message went onto failure heap
-                            if (null != message)
-                            {
-                                //if attempts exceed X or time since sent, add to fail
-                                message.LastSendAttempt = attemptTime;
-                                message.SendAttempts++;
-                                try
-                                {
-                                    SendMessage(message);
-                                    LogSent(message);
-                                    if (!fromRegularQueue) retryQueues[dest].Dequeue(); //pulls peeked obj off as success
-                                }
-                                catch
-                                {
-                                    if ((message.LastSendAttempt - message.Sent).TotalHours > 24.0)
-                                    {
-                                        LogFailed(message);
-                                        if (!fromRegularQueue)
-                                        {
-                                            //pulls peeked obj off no more trying
-                                            retryQueues[dest].Dequeue();
-                                        }
-                                    }
-                                    else
-                                    {
-                                        if (fromRegularQueue)
-                                        {
-                                            if (!retryQueues.ContainsKey(dest)) retryQueues.Add(dest,
-                                                new CachingQueue<OutboundMessage>(this.msgDir, fastFile,
-                                                    OutboundMessage.ReadFromFile, "*.omq",
-                                                    maxMessagesInMemory, reorderLevel, persistMessages: false));
-                                            retryQueues[dest].Enqueue(message.Filename, message);
-                                        }
-                                    }
-                                }
+                                retryQueue.ReEnqueue(message.Filename, message);
                             }
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    this.stateException = e;
-                    this.state = QueueState.Cautioned;
-                }
+                catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
             }
         }
 
+        private OutboundMessage GetRetryCandidate()
+        {
+            lock (retryQueues)
+            {
+                OutboundMessage selected = null;
+                foreach (var retry in retryQueues.Values)
+                {
+                    var candidate = retry.Peek();
+                    if (candidate == null || !RetryDelayElapsed(candidate)) continue;
+                    if (selected == null || candidate.LastSendAttempt < selected.LastSendAttempt) selected = candidate;
+                }
+                return selected;
+            }
+        }
+
+        private bool RetryDelayElapsed(OutboundMessage message)
+        {
+            var factor = Math.Pow(Math.Max(1.0, deliveryOptions.RetryBackoffFactor), Math.Max(0, message.SendAttempts - 1));
+            var delayMs = Math.Min(deliveryOptions.MaximumRetryDelay.TotalMilliseconds,
+                deliveryOptions.InitialRetryDelay.TotalMilliseconds * factor);
+            return DateTime.UtcNow - message.LastSendAttempt.ToUniversalTime() >= TimeSpan.FromMilliseconds(delayMs);
+        }
+
+        private bool ShouldDeadLetter(OutboundMessage message)
+        {
+            return message.SendAttempts >= deliveryOptions.MaxAttempts ||
+                   DateTime.UtcNow - message.Sent.ToUniversalTime() >= deliveryOptions.MaxAge;
+        }
 
         private void SendMessage(OutboundMessage message)
         {
             NpClient<IMessageService> npClient = null;
             TcpClient<IMessageService> tcpClient = null;
-            IMessageService proxy = null;
-            var useNpClient = false;
             var poolKey = message.To.ToString();
             try
             {
-                if (message.To.Transport == Transport.Both)
+                IMessageService proxy;
+                var useNamedPipe = message.To.Transport == Transport.Np ||
+                    message.To.Transport == Transport.Both && message.To.ServerName == message.From.ServerName;
+                if (useNamedPipe)
                 {
-                    if (message.To.ServerName == message.From.ServerName)
-                    {
-                        useNpClient = true;
-                    }
-                }
-                else if (message.To.Transport == Transport.Np) useNpClient = true;
-
-                if (useNpClient)
-                {
-                    npClient = npClientPool.Request(poolKey,
-                        () => new NpClient<IMessageService>(
-                                    new NpEndPoint(message.To.PipeName, connectTimeOutMs)));
+                    npClient = npClientPool.Request(poolKey, () => new NpClient<IMessageService>(
+                        new NpEndPoint(message.To.PipeName, connectTimeOutMs)));
                     proxy = npClient.Proxy;
                 }
                 else
                 {
-                    tcpClient = tcpClientPool.Request(poolKey,
-                        () => new TcpClient<IMessageService>(new TcpEndPoint(
-                                new IPEndPoint(IPAddress.Parse(message.To.IpAddress),
-                                    message.To.Port), connectTimeOutMs)));
+                    tcpClient = tcpClientPool.Request(poolKey, () => new TcpClient<IMessageService>(new TcpEndPoint(
+                        new IPEndPoint(IPAddress.Parse(message.To.IpAddress), message.To.Port), connectTimeOutMs)));
                     proxy = tcpClient.Proxy;
                 }
-
-                if (null == message.MessageBytes)
-                {
+                if (message.MessageBytes == null)
                     proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
-                            message.MessageTypeName, message.MessageString);
-                }
+                        message.MessageTypeName, message.MessageString);
                 else
-                {
                     proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, message.SendAttempts,
                         message.MessageTypeName, message.MessageBytes);
-                }
             }
             catch
             {
-                //assure failed client is properly disposed and not returned to pool
-                if (null != tcpClient)
-                {
-                    tcpClient.Dispose();
-                    tcpClient = null;
-                }
-                if (null != npClient)
-                {
-                    npClient.Dispose();
-                    npClient = null;
-                }
+                if (tcpClient != null) { tcpClient.Dispose(); tcpClient = null; }
+                if (npClient != null) { npClient.Dispose(); npClient = null; }
                 throw;
             }
             finally
             {
-                //return client to pool
-                if (null != npClient) npClientPool.Release(poolKey, npClient);
-                if (null != tcpClient) tcpClientPool.Release(poolKey, tcpClient);
-            }
-        }
-
-        private const string DtLogFormat = "yyyyMMdd-HH-mm";
-
-        private void LogFailed(OutboundMessage message)
-        {
-            try
-            {
-                var fileName = string.Format("fail-{0}.log", DateTime.Now.ToString(DtLogFormat));
-                var logFile = Path.Combine(this.failDir, fileName);
-                var line = message.ToString().ToFlatLine();
-                fastFile.AppendAllLines(logFile, new string[] { line });
-                fastFile.Delete(message.Filename);
-            }
-            catch (Exception e)
-            {
-                this.stateException = e;
-                this.state = QueueState.Cautioned;
+                if (npClient != null) npClientPool.Release(poolKey, npClient);
+                if (tcpClient != null) tcpClientPool.Release(poolKey, tcpClient);
             }
         }
 
         private void LogSent(OutboundMessage message)
         {
-            try
-            {
-                if (persistMessagesSentLogs)
-                {
-                    var fileName = string.Format("sent-{0}.log", DateTime.Now.ToString(DtLogFormat));
-                    var logFile = Path.Combine(this.sentDir, fileName);
-                    var line = message.ToString().ToFlatLine();
-                    fastFile.AppendAllLines(logFile, new string[] { line });
-                }
-                fastFile.Delete(message.Filename);
-            }
-            catch (Exception e)
-            {
-                this.stateException = e;
-                this.state = QueueState.Cautioned;
-            }
-
-            //cleanup every two hours
-            if (persistMessagesSentLogs && (DateTime.Now - lastCleaned).TotalHours > 2.0)
-            {
-                lastCleaned = DateTime.Now;
-                Task.Factory.StartNew(() =>
-                {
-                    try
-                    {
-                        var files = Directory.GetFiles(this.sentDir);
-                        foreach (var file in files)
-                        {
-                            var info = new FileInfo(file);
-                            if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
-                            {
-                                fastFile.Delete(file);
-                            }
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        this.stateException = e;
-                        this.state = QueueState.Cautioned;
-                    }
-                }, TaskCreationOptions.LongRunning);
-            }
+            var audit = CreateAudit(message, storageOptions.SentAuditPayload);
+            if (audit != null) store.Append(StorageArea.Sent, AuditKey("sent"), audit, storageOptions.Durability);
+            store.Delete(StorageArea.Outgoing, message.Filename);
         }
+
+        private void DeadLetterMessage(OutboundMessage message, Exception exception)
+        {
+            var key = Path.ChangeExtension(message.Filename, ".dlq");
+            var reason = exception == null ? "Delivery policy exhausted." : exception.GetType().FullName + ": " + exception.Message;
+            var value = "dlq1\t" + Encode(reason) + "\t" + Encode(message.ToString());
+            store.Write(StorageArea.DeadLetter, key, value, storageOptions.Durability);
+            store.Delete(StorageArea.Outgoing, message.Filename);
+        }
+
+        private static OutboundMessage ParseDeadLetter(string key, string value, out string reason)
+        {
+            var parts = value.Split('\t');
+            if (parts.Length != 3 || parts[0] != "dlq1") throw new FormatException("Invalid ServiceMq dead-letter record.");
+            reason = Decode(parts[1]);
+            return OutboundMessage.Deserialize(key, Decode(parts[2]));
+        }
+
+        private string NewKey(string suffix)
+        {
+            return DateTime.UtcNow.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture) + "-" +
+                Interlocked.Increment(ref sequence).ToString("D10", CultureInfo.InvariantCulture) + "-" +
+                Guid.NewGuid().ToString("N") + suffix;
+        }
+
+        private static string AuditKey(string prefix)
+        {
+            return prefix + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HH-mm", CultureInfo.InvariantCulture) + ".log";
+        }
+
+        private static string CreateAudit(OutboundMessage message, AuditPayloadMode mode)
+        {
+            if (mode == AuditPayloadMode.None) return null;
+            if (mode == AuditPayloadMode.Full) return message.ToString();
+            return string.Join("\t", "meta", message.Id, message.From, message.To,
+                message.Sent.ToString("o", CultureInfo.InvariantCulture), message.SendAttempts, message.MessageTypeName,
+                message.MessageBytes == null ? (message.MessageString ?? string.Empty).Length : message.MessageBytes.Length);
+        }
+
+        private static string Encode(string value) { return Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? string.Empty)); }
+        private static string Decode(string value) { return Encoding.UTF8.GetString(Convert.FromBase64String(value)); }
     }
 }

@@ -1,13 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Reflection;
-using System.Security.Cryptography;
-using System.Text;
+using System.Threading;
 using Newtonsoft.Json;
-using ServiceWire;
 using ServiceWire.NamedPipes;
 using ServiceWire.TcpIp;
 
@@ -16,399 +13,360 @@ namespace ServiceMq
     public class MessageQueue : IDisposable
     {
         private readonly Address address;
-        private readonly NpEndPoint npEndPoint = null;
-        private readonly IPEndPoint ipEndPoint = null;
-        private readonly string msgDir = null;
-        private readonly string name = null;
-        private readonly OutboundQueue outboundQueue = null;
-        private readonly InboundQueue inboundQueue = null;
-        private readonly IMessageService messageService = null;
-        private readonly NpHost npHost = null;
-        private readonly TcpHost tcpHost = null;
-        private readonly int connectTimeOutMs = 500;
-        private readonly int maxMessagesInMemory;
-        private readonly int reorderLevel;
+        private readonly NpEndPoint npEndPoint;
+        private readonly IPEndPoint ipEndPoint;
+        private readonly InboundQueue inboundQueue;
+        private readonly OutboundQueue outboundQueue;
+        private readonly IMessageStore store;
+        private readonly NpHost npHost;
+        private readonly TcpHost tcpHost;
+        private readonly StorageOptions storageOptions;
+        private readonly Timer cleanupTimer;
+        private readonly JsonSerializerSettings serializerSettings = new JsonSerializerSettings
+        {
+            ReferenceLoopHandling = ReferenceLoopHandling.Ignore
+        };
+        private bool disposed;
 
-        private Exception stateExceptionOutbound = null;
-        private QueueState stateOutbound = QueueState.Running;
-        private Exception stateExceptionInbound = null;
-        private QueueState stateInbound = QueueState.Running;
-        private FastFile fastFile = null;
-
-        public MessageQueue(string name, 
-            Address address, 
-            string msgDir = null, 
-            ILog log = null, 
-            IStats stats = null,
-            double hoursReadSentLogsToLive = 48.0,
-            int connectTimeOutMs = 500,
-            bool persistMessagesSentLogs = true,
-            bool persistMessagesReadLogs = true,
-            int maxMessagesInMemory = 8192, 
-            int reorderLevel = 4096,
+        public MessageQueue(string name, Address address, string msgDir = null, ServiceWire.ILog log = null,
+            ServiceWire.IStats stats = null, double hoursReadSentLogsToLive = 48.0, int connectTimeOutMs = 500,
+            bool persistMessagesSentLogs = true, bool persistMessagesReadLogs = true,
+            int maxMessagesInMemory = 8192, int reorderLevel = 4096,
             bool persistMessagesAsynchronously = false)
+            : this(CreateLegacyOptions(name, address, msgDir, log, stats, hoursReadSentLogsToLive,
+                connectTimeOutMs, persistMessagesSentLogs, persistMessagesReadLogs,
+                maxMessagesInMemory, reorderLevel, persistMessagesAsynchronously))
         {
-            this.name = name;
-            this.address = address;
-            this.msgDir = msgDir ?? GetExecutablePathDirectory();
-            this.maxMessagesInMemory = maxMessagesInMemory;
-            this.reorderLevel = reorderLevel;
-            this.fastFile = new FastFile(asyncWrites: persistMessagesAsynchronously);
-
-            Directory.CreateDirectory(this.msgDir);
-
-            this.connectTimeOutMs = connectTimeOutMs;
-
-            //create inbound and outbound queues
-            this.outboundQueue = new OutboundQueue(this.name, this.msgDir, this.fastFile,
-                hoursReadSentLogsToLive, connectTimeOutMs, persistMessagesSentLogs, 
-                maxMessagesInMemory, reorderLevel);
-            this.inboundQueue = new InboundQueue(this.name, this.msgDir, this.fastFile,
-                hoursReadSentLogsToLive, persistMessagesReadLogs, 
-                maxMessagesInMemory, reorderLevel);
-
-            //create message service singleton
-            this.messageService = new MessageService(this.inboundQueue);
-
-            //create and open hosts
-            if (this.address.Transport == Transport.Both || this.address.Transport == Transport.Tcp)
-            {
-                this.ipEndPoint = new IPEndPoint(IPAddress.Parse(this.address.IpAddress), this.address.Port);
-                this.tcpHost = new TcpHost(this.ipEndPoint, log, stats);
-                this.tcpHost.AddService<IMessageService>(this.messageService);
-                this.tcpHost.Open();
-            }
-
-            if (this.address.Transport == Transport.Both || this.address.Transport == Transport.Np)
-            {
-                this.npEndPoint = new NpEndPoint(this.address.ServerName, this.address.PipeName);
-                this.npHost = new NpHost(this.npEndPoint.PipeName, log, stats);
-                this.npHost.AddService<IMessageService>(this.messageService);
-                this.npHost.Open();
-            }
         }
 
-        public long CountOutbound
+        public MessageQueue(MessageQueueOptions options)
+        {
+            Validate(options);
+            address = options.Address;
+            storageOptions = options.Storage;
+            var provider = storageOptions.Provider;
+            var disposeProvider = provider == null || storageOptions.DisposeProvider;
+            if (provider == null)
+            {
+                if (storageOptions.Durability == DurabilityMode.MemoryOnly) provider = new MemoryMessageStore();
+                else
+                {
+                    var root = storageOptions.RootPath;
+                    if (string.IsNullOrWhiteSpace(root)) root = GetDefaultStoragePath(options.Name);
+                    provider = new FileMessageStore(root);
+                }
+            }
+            store = new ConfiguredMessageStore(provider, storageOptions, disposeProvider);
+            outboundQueue = new OutboundQueue(store, storageOptions, options.Delivery,
+                options.ConnectTimeOutMs, options.MaxMessagesInMemory, options.ReorderLevel);
+            inboundQueue = new InboundQueue(store, storageOptions, options.VisibilityTimeout,
+                options.MaxMessagesInMemory, options.ReorderLevel);
+
+            if (address.Transport == Transport.Both || address.Transport == Transport.Tcp)
+            {
+                ipEndPoint = new IPEndPoint(IPAddress.Parse(address.IpAddress), address.Port);
+                tcpHost = new TcpHost(ipEndPoint, options.Log, options.Stats);
+                tcpHost.AddService<IMessageService>(new MessageService(inboundQueue));
+                tcpHost.Open();
+            }
+            if (address.Transport == Transport.Both || address.Transport == Transport.Np)
+            {
+                npEndPoint = new NpEndPoint(address.ServerName, address.PipeName);
+                npHost = new NpHost(npEndPoint.PipeName, options.Log, options.Stats);
+                npHost.AddService<IMessageService>(new MessageService(inboundQueue));
+                npHost.Open();
+            }
+
+            var cleanupInterval = storageOptions.CleanupInterval <= TimeSpan.Zero
+                ? TimeSpan.FromMinutes(15) : storageOptions.CleanupInterval;
+            cleanupTimer = new Timer(CleanupStorage, null, cleanupInterval, cleanupInterval);
+        }
+
+        public long CountOutbound { get { return outboundQueue.Count; } }
+        public int CountInbound { get { return inboundQueue.Count; } }
+        public Exception StateExceptionOutbound { get { return outboundQueue.StateException; } }
+        public QueueState StateOutbound { get { return outboundQueue.State; } }
+        public Exception StateExceptionInbound { get { return inboundQueue.StateException; } }
+        public QueueState StateInbound { get { return inboundQueue.State; } }
+
+        public QueueStorageHealth StorageHealth
         {
             get
             {
-                return outboundQueue.Count;
+                var incoming = store.GetStatistics(StorageArea.Incoming);
+                var outgoing = store.GetStatistics(StorageArea.Outgoing);
+                var dead = store.GetStatistics(StorageArea.DeadLetter);
+                var corrupt = store.GetStatistics(StorageArea.Corrupt);
+                var exception = StateExceptionInbound ?? StateExceptionOutbound ?? store.LastException;
+                return new QueueStorageHealth
+                {
+                    State = exception == null ? QueueState.Running : QueueState.Cautioned,
+                    LastException = exception,
+                    IncomingMessages = incoming.Count,
+                    OutgoingMessages = outgoing.Count,
+                    DeadLetterMessages = dead.Count,
+                    CorruptMessages = corrupt.Count,
+                    StoredBytes = incoming.Bytes + outgoing.Bytes + dead.Bytes + corrupt.Bytes +
+                        store.GetStatistics(StorageArea.Read).Bytes + store.GetStatistics(StorageArea.Sent).Bytes,
+                    OldestIncomingUtc = incoming.OldestUtc,
+                    OldestOutgoingUtc = outgoing.OldestUtc
+                };
             }
         }
-
-        public int CountInbound
-        {
-            get
-            {
-                return inboundQueue.Count;
-            }
-        }
-
-        public Exception StateExceptionOutbound { get { return stateExceptionOutbound; } }
-        public QueueState StateOutbound { get { return stateOutbound; } }
-        public Exception StateExceptionInbound { get { return stateExceptionInbound; } }
-        public QueueState StateInbound { get { return stateInbound; } }
 
         public void ClearState()
         {
-            this.inboundQueue.ClearState();
-            this.outboundQueue.ClearState();
+            inboundQueue.ClearState();
+            outboundQueue.ClearState();
         }
 
-        private JsonSerializerSettings settings = new JsonSerializerSettings
+        public Guid Send<T>(Address destination, T message)
         {
-            ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore
-        };
-
-        public Guid Send<T>(Address dest, T message)
-        {
-            var addr = GetOptimalAddress(dest);
-            string msg = JsonConvert.SerializeObject(message, settings);
-            return SendMsg(msg, typeof(T).FullName, addr);
+            return SendMsg(JsonConvert.SerializeObject(message, serializerSettings), typeof(T).FullName,
+                GetOptimalAddress(destination));
         }
 
-        public Guid Send(Address dest, string messageType, string message)
+        public Guid Send(Address destination, string messageType, string message)
         {
-            var addr = GetOptimalAddress(dest);
-            return SendMsg(message, messageType, addr);
+            return SendMsg(message, messageType, GetOptimalAddress(destination));
         }
 
-        public Guid SendBytes(Address dest, byte[] message, string messageType)
+        public Guid SendBytes(Address destination, byte[] message, string messageType)
         {
-            var addr = GetOptimalAddress(dest);
-            return SendMsg(message, messageType, addr);
+            return SendMsg(message, messageType, GetOptimalAddress(destination));
         }
 
-        private Guid SendMsg(string msg, string messageType, Address dest)
+        public Guid Broadcast<T>(IEnumerable<Address> destinations, T message)
         {
-            if (this.outboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Outbound queue exception state. See inner exception.", 
-                    this.outboundQueue.StateException);
-            }
-            var message = new OutboundMessage()
-            {
-                From = this.address,
-                To = dest,
-                Id = Guid.NewGuid(),
-                MessageString = msg,
-                MessageTypeName = messageType,
-                Sent = DateTime.Now
-            };
-            this.outboundQueue.Enqueue(message);
-            return message.Id;
+            return BroadcastMsg(JsonConvert.SerializeObject(message, serializerSettings), typeof(T).FullName,
+                destinations.Select(GetOptimalAddress));
         }
 
-        private Guid SendMsg(byte[] msg, string messageType, Address dest)
+        public Guid Broadcast(IEnumerable<Address> destinations, string messageType, string message)
         {
-            if (this.outboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Outbound queue exception state. See inner exception.", 
-                    this.outboundQueue.StateException);
-            }
-            var message = new OutboundMessage()
-            {
-                From = this.address,
-                To = dest,
-                Id = Guid.NewGuid(),
-                MessageBytes = msg,
-                MessageTypeName = messageType,
-                Sent = DateTime.Now
-            };
-            this.outboundQueue.Enqueue(message);
-            return message.Id;
+            return BroadcastMsg(message, messageType, destinations.Select(GetOptimalAddress));
         }
 
-        public Guid Broadcast<T>(IEnumerable<Address> dests, T message)
+        public Guid BroadcastBytes(IEnumerable<Address> destinations, byte[] message, string messageType)
         {
-            var addrs = new List<Address>();
-            foreach(var dAddr in dests)
-            {
-                addrs.Add(GetOptimalAddress(dAddr));
-            }
-            string msg = JsonConvert.SerializeObject(message, settings);
-            return BroadcastMsg(msg, typeof(T).FullName, addrs);
+            return BroadcastMsg(message, messageType, destinations.Select(GetOptimalAddress));
         }
 
-        public Guid Broadcast(IEnumerable<Address> dests, string messageType, string message)
-        {
-            var addrs = new List<Address>();
-            foreach (var dAddr in dests)
-            {
-                addrs.Add(GetOptimalAddress(dAddr));
-            }
-            return BroadcastMsg(message, messageType, addrs);
-        }
-
-        public Guid BroadcastBytes(IEnumerable<Address> dests, byte[] message, string messageType)
-        {
-            var addrs = new List<Address>();
-            foreach (var dAddr in dests)
-            {
-                addrs.Add(GetOptimalAddress(dAddr));
-            }
-            return BroadcastMsg(message, messageType, addrs);
-        }
-
-        private Guid BroadcastMsg(string msg, string messageType, IEnumerable<Address> dests)
-        {
-            if (this.outboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Outbound queue exception state. See inner exception.", 
-                    this.outboundQueue.StateException);
-            }
-            var id = Guid.NewGuid();
-            var now = DateTime.Now;
-            foreach (var dest in dests)
-            {
-                var message = new OutboundMessage()
-                {
-                    From = this.address,
-                    To = dest,
-                    Id = id,
-                    MessageString = msg,
-                    MessageTypeName = messageType,
-                    Sent = now
-                };
-                this.outboundQueue.Enqueue(message);
-            }
-            return id;
-        }
-
-        private Guid BroadcastMsg(byte[] msg, string messageType, IEnumerable<Address> dests)
-        {
-            if (this.outboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Outbound queue exception state. See inner exception.", 
-                    this.outboundQueue.StateException);
-            }
-            var id = Guid.NewGuid();
-            var now = DateTime.Now;
-            foreach (var dest in dests)
-            {
-                var message = new OutboundMessage()
-                {
-                    From = this.address,
-                    To = dest,
-                    Id = Guid.NewGuid(),
-                    MessageBytes = msg,
-                    MessageTypeName = messageType,
-                    Sent = DateTime.Now
-                };
-                this.outboundQueue.Enqueue(message);
-            }
-            return id;
-        } 
-
-        /// <summary>
-        /// Get one message in order received and removes it from the inbox and logs it to the read log. 
-        /// Blocking if timeoutMs = -1.
-        /// </summary>
-        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
-        /// <returns></returns>
         public Message Receive(int timeoutMs = -1)
         {
-            if (this.inboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Inbound queue exception state. See inner exception.", 
-                    this.inboundQueue.StateException);
-            }
-            return this.inboundQueue.Receive(timeoutMs);
+            ThrowIfInboundFailed();
+            return inboundQueue.Receive(timeoutMs);
         }
 
-        /// <summary>
-        /// Get one to many messages in order received. Removes all returned from the inbox and 
-        /// logs it to the read log. Blocking if timeoutMs = -1.
-        /// </summary>
-        /// <param name="maxMessagesToReceive">Indicate the maximum messages to pull from the queue.</param>
-        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
-        /// <returns></returns>
         public IList<Message> ReceiveBulk(int maxMessagesToReceive, int timeoutMs = -1)
         {
-            if (this.inboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Inbound queue exception state. See inner exception.",
-                    this.inboundQueue.StateException);
-            }
-            return this.inboundQueue.ReceiveBulk(maxMessagesToReceive, timeoutMs);
+            ThrowIfInboundFailed();
+            return inboundQueue.ReceiveBulk(maxMessagesToReceive, timeoutMs);
         }
 
-        /// <summary>
-        /// Get one message in order received without removing it from the inbox. Blocking if timeoutMs = -1.
-        /// If Acknowledge is not called, the message will remain in the inbox and be queued again when
-        /// the MessageQueue is next constructed.
-        /// </summary>
-        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
-        /// <returns></returns>
         public Message Accept(int timeoutMs = -1)
         {
-            if (this.inboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Inbound queue exception state. See inner exception.", 
-                    this.inboundQueue.StateException);
-            }
-            return this.inboundQueue.Receive(timeoutMs, logRead: false);
+            ThrowIfInboundFailed();
+            return inboundQueue.Receive(timeoutMs, false);
         }
 
-        /// <summary>
-        /// Get one to many messages in order received without removing it from the inbox. 
-        /// Blocking if timeoutMs = -1. If Acknowledge is not called, the message will 
-        /// remain in the inbox and be queued again when the MessageQueue is next constructed.
-        /// </summary>
-        /// <param name="maxMessagesToReceive">Indicate the maximum messages to pull from the queue.</param>
-        /// <param name="timeoutMs">Specify milliseconds timeout. Returns null if timed out.</param>
-        /// <returns></returns>
         public IList<Message> AcceptBulk(int maxMessagesToReceive, int timeoutMs = -1)
         {
-            if (this.inboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Inbound queue exception state. See inner exception.",
-                    this.inboundQueue.StateException);
-            }
-            return this.inboundQueue.ReceiveBulk(maxMessagesToReceive, timeoutMs, logRead: false);
+            ThrowIfInboundFailed();
+            return inboundQueue.ReceiveBulk(maxMessagesToReceive, timeoutMs, false);
         }
 
-        /// <summary>
-        /// Signal message handled to be deleted from inbox and logged to read log.
-        /// </summary>
-        /// <param name="message"></param>
         public void Acknowledge(Message message)
         {
-            if (this.inboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Inbound queue exception state. See inner exception.", 
-                    this.inboundQueue.StateException);
-            }
-            this.inboundQueue.Acknowledge(message);
+            ThrowIfInboundFailed();
+            inboundQueue.Acknowledge(message);
         }
 
-        /// <summary>
-        /// Signal message could not be handled at this time. Adds it back into the 
-        /// in-process queue out of order. This allows reprocessing after processing
-        /// the current queued messages.
-        /// </summary>
-        /// <param name="message"></param>
         public void ReEnqueue(Message message)
         {
-            if (this.inboundQueue.State == QueueState.Failed)
-            {
-                throw new IOException("Inbound queue exception state. See inner exception.", 
-                    this.inboundQueue.StateException);
-            }
-            this.inboundQueue.ReEnqueue(message);
+            ThrowIfInboundFailed();
+            inboundQueue.ReEnqueue(message);
         }
 
-        private Address GetOptimalAddress(Address dest)
+        public IReadOnlyList<DeadLetter> GetDeadLetters() { return outboundQueue.GetDeadLetters(); }
+        public bool ReplayDeadLetter(string key) { return outboundQueue.ReplayDeadLetter(key); }
+        public bool DeleteDeadLetter(string key) { return outboundQueue.DeleteDeadLetter(key); }
+
+        public void PurgeDeadLetters()
         {
-            bool chooseTcp = (dest.Transport == Transport.Both 
-                                && this.address.ServerName != dest.ServerName);
-            if (chooseTcp || dest.Transport == Transport.Tcp)
-            {
-                if (null == this.ipEndPoint) throw new ArgumentException("Cannot send to a IP endpoint if queue does not have an IP endpoint.", "destEndPoint");
-                return new Address(dest.ServerName, dest.Port);
-            }
-            else
-            {
-                if (null == this.npEndPoint) throw new ArgumentException("Cannot send to a named pipe endpoint if queue does not have named pipe endpoint.", "destEndPoint");
-                return new Address(dest.PipeName);
-            }
+            foreach (var deadLetter in GetDeadLetters()) outboundQueue.DeleteDeadLetter(deadLetter.Key);
         }
-        
-        private string GetExecutablePathDirectory()
+
+        public IReadOnlyList<StorageEntry> GetCorruptEntries()
         {
-            return Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty, "msg");
+            return store.GetKeys(StorageArea.Corrupt).Select(x => store.Read(StorageArea.Corrupt, x)).ToArray();
         }
 
+        public bool DeleteCorruptEntry(string key)
+        {
+            if (!store.Contains(StorageArea.Corrupt, key)) return false;
+            store.Delete(StorageArea.Corrupt, key);
+            return true;
+        }
 
-        #region IDisposable 
+        public void RunStorageMaintenance() { CleanupStorage(null); }
+        public void FlushStorage() { store.Flush(); }
 
-        private bool _disposed = false;
+        private Guid SendMsg(string value, string messageType, Address destination)
+        {
+            ThrowIfOutboundFailed();
+            var message = NewOutbound(destination, messageType);
+            message.MessageString = value;
+            outboundQueue.Enqueue(message);
+            return message.Id;
+        }
+
+        private Guid SendMsg(byte[] value, string messageType, Address destination)
+        {
+            ThrowIfOutboundFailed();
+            var message = NewOutbound(destination, messageType);
+            message.MessageBytes = value;
+            outboundQueue.Enqueue(message);
+            return message.Id;
+        }
+
+        private Guid BroadcastMsg(string value, string messageType, IEnumerable<Address> destinations)
+        {
+            ThrowIfOutboundFailed();
+            var id = Guid.NewGuid();
+            var sent = DateTime.UtcNow;
+            foreach (var destination in destinations)
+            {
+                var message = NewOutbound(destination, messageType, id, sent);
+                message.MessageString = value;
+                outboundQueue.Enqueue(message);
+            }
+            return id;
+        }
+
+        private Guid BroadcastMsg(byte[] value, string messageType, IEnumerable<Address> destinations)
+        {
+            ThrowIfOutboundFailed();
+            var id = Guid.NewGuid();
+            var sent = DateTime.UtcNow;
+            foreach (var destination in destinations)
+            {
+                var message = NewOutbound(destination, messageType, id, sent);
+                message.MessageBytes = value;
+                outboundQueue.Enqueue(message);
+            }
+            return id;
+        }
+
+        private OutboundMessage NewOutbound(Address destination, string messageType, Guid? id = null, DateTime? sent = null)
+        {
+            return new OutboundMessage
+            {
+                From = address,
+                To = destination,
+                Id = id ?? Guid.NewGuid(),
+                MessageTypeName = messageType,
+                Sent = sent ?? DateTime.UtcNow
+            };
+        }
+
+        private Address GetOptimalAddress(Address destination)
+        {
+            var chooseTcp = destination.Transport == Transport.Both && address.ServerName != destination.ServerName;
+            if (chooseTcp || destination.Transport == Transport.Tcp)
+            {
+                if (ipEndPoint == null) throw new ArgumentException("This queue has no TCP endpoint.", "destination");
+                return new Address(destination.ServerName, destination.Port);
+            }
+            if (npEndPoint == null) throw new ArgumentException("This queue has no named-pipe endpoint.", "destination");
+            return new Address(destination.PipeName);
+        }
+
+        private void ThrowIfOutboundFailed()
+        {
+            if (outboundQueue.State == QueueState.Failed)
+                throw new IOException("Outbound queue exception state. See inner exception.", outboundQueue.StateException);
+        }
+
+        private void ThrowIfInboundFailed()
+        {
+            if (inboundQueue.State == QueueState.Failed)
+                throw new IOException("Inbound queue exception state. See inner exception.", inboundQueue.StateException);
+        }
+
+        private void CleanupStorage(object ignored)
+        {
+            try
+            {
+                PurgeByRetention(StorageArea.Sent, storageOptions.SentRetention);
+                PurgeByRetention(StorageArea.Read, storageOptions.ReadRetention);
+                PurgeByRetention(StorageArea.DeadLetter, storageOptions.DeadLetterRetention);
+            }
+            catch { }
+        }
+
+        private void PurgeByRetention(StorageArea area, TimeSpan retention)
+        {
+            if (retention != TimeSpan.MaxValue) store.Purge(area, DateTime.UtcNow - retention);
+        }
 
         public void Dispose()
         {
-            //MS recommended dispose pattern - prevents GC from disposing again
-            Dispose(true);
+            if (disposed) return;
+            disposed = true;
+            cleanupTimer.Dispose();
+            outboundQueue.Stop();
+            inboundQueue.Stop();
+            if (npHost != null) npHost.Dispose();
+            if (tcpHost != null) tcpHost.Dispose();
+            store.Flush();
+            store.Dispose();
             GC.SuppressFinalize(this);
         }
 
-        protected virtual void Dispose(bool disposing)
+        private static MessageQueueOptions CreateLegacyOptions(string name, Address address, string msgDir,
+            ServiceWire.ILog log, ServiceWire.IStats stats, double retentionHours, int connectTimeout,
+            bool sentLogs, bool readLogs, int maxMemory, int reorderLevel, bool asyncWrites)
         {
-            if (!_disposed)
+            return new MessageQueueOptions
             {
-                _disposed = true; //prevent second cleanup
-                if (disposing)
+                Name = name,
+                Address = address,
+                Log = log,
+                Stats = stats,
+                ConnectTimeOutMs = connectTimeout,
+                MaxMessagesInMemory = maxMemory,
+                ReorderLevel = reorderLevel,
+                Storage = new StorageOptions
                 {
-                    //cleanup here
-                    outboundQueue.Stop();
-                    inboundQueue.Stop();
-                    if (null != npHost) npHost.Dispose();
-                    if (null != tcpHost) tcpHost.Dispose();
-                    //complete writing and deletions
-                    if (null != fastFile) fastFile.Dispose(); 
+                    RootPath = msgDir,
+                    Durability = asyncWrites ? DurabilityMode.Buffered : DurabilityMode.FlushToDisk,
+                    SentRetention = TimeSpan.FromHours(retentionHours),
+                    ReadRetention = TimeSpan.FromHours(retentionHours),
+                    SentAuditPayload = sentLogs ? AuditPayloadMode.Full : AuditPayloadMode.None,
+                    ReadAuditPayload = readLogs ? AuditPayloadMode.Full : AuditPayloadMode.None
                 }
-            }
+            };
         }
 
-        #endregion
+        private static void Validate(MessageQueueOptions options)
+        {
+            if (options == null) throw new ArgumentNullException("options");
+            if (string.IsNullOrWhiteSpace(options.Name)) throw new ArgumentException("A queue name is required.", "options");
+            if (options.Address == null) throw new ArgumentException("A queue address is required.", "options");
+            if (options.Storage == null) throw new ArgumentException("Storage options are required.", "options");
+            if (options.Delivery == null) throw new ArgumentException("Delivery options are required.", "options");
+            if (options.MaxMessagesInMemory < 1) throw new ArgumentOutOfRangeException("options.MaxMessagesInMemory");
+            if (options.ReorderLevel < 1 || options.ReorderLevel > options.MaxMessagesInMemory)
+                throw new ArgumentOutOfRangeException("options.ReorderLevel");
+            if (options.Delivery.MaxAttempts < 1) throw new ArgumentOutOfRangeException("options.Delivery.MaxAttempts");
+            if (options.Delivery.MaxAge <= TimeSpan.Zero) throw new ArgumentOutOfRangeException("options.Delivery.MaxAge");
+        }
+
+        private static string GetDefaultStoragePath(string name)
+        {
+            foreach (var invalid in Path.GetInvalidFileNameChars()) name = name.Replace(invalid, '_');
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ServiceMq", name);
+        }
     }
 }

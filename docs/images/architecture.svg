@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">ServiceMq architecture</title>
+  <desc id="desc">A sender writes to an outgoing store, ServiceMq delivers over ServiceWire, and a receiver reads from an incoming store.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker>
+    <style>.t{font:600 18px system-ui,sans-serif;fill:#0f172a}.s{font:14px system-ui,sans-serif;fill:#475569}.box{stroke-width:2;rx:16}.line{stroke:#475569;stroke-width:3;fill:none;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="960" height="360" rx="24" fill="#f8fafc"/>
+  <text x="480" y="38" text-anchor="middle" class="t">Durable delivery through ServiceMq</text>
+  <rect x="40" y="100" width="160" height="100" class="box" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="120" y="143" text-anchor="middle" class="t">Sender app</text><text x="120" y="170" text-anchor="middle" class="s">Send(message)</text>
+  <rect x="250" y="100" width="170" height="100" class="box" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="335" y="137" text-anchor="middle" class="t">Outgoing store</text><text x="335" y="164" text-anchor="middle" class="s">file · memory · SQLite</text><text x="335" y="185" text-anchor="middle" class="s">or custom</text>
+  <rect x="470" y="100" width="150" height="100" class="box" fill="#fef3c7" stroke="#d97706"/>
+  <text x="545" y="140" text-anchor="middle" class="t">ServiceWire</text><text x="545" y="168" text-anchor="middle" class="s">named pipe or TCP</text>
+  <rect x="670" y="100" width="170" height="100" class="box" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="755" y="137" text-anchor="middle" class="t">Incoming store</text><text x="755" y="164" text-anchor="middle" class="s">durable until read</text><text x="755" y="185" text-anchor="middle" class="s">or acknowledged</text>
+  <rect x="670" y="245" width="170" height="78" class="box" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="755" y="278" text-anchor="middle" class="t">Receiver app</text><text x="755" y="302" text-anchor="middle" class="s">Receive / Accept</text>
+  <path d="M200 150 H245" class="line"/><path d="M420 150 H465" class="line"/><path d="M620 150 H665" class="line"/><path d="M755 200 V240" class="line"/>
+  <path d="M545 205 C545 270 410 285 335 205" class="line" stroke-dasharray="8 7"/>
+  <text x="455" y="282" text-anchor="middle" class="s">retry after a failed attempt</text>
+</svg>

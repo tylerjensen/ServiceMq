@@ -1,255 +1,196 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.IO;
+using System.Globalization;
 using System.Linq;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace ServiceMq
 {
-    internal class InboundQueue 
+    internal sealed class InboundQueue
     {
-        private const string DtFormat = "yyyyMMddHHmmssfff";
-        private readonly CachingQueue<Message> mq;
-        private readonly string msgDir;
-        private readonly string inDir;
-        private readonly string readDir;
-        private readonly string name;
-        private readonly double hoursReadSentLogsToLive;
-        private readonly bool persistMessagesReadLogs;
-        private readonly int maxMessagesInMemory;
-        private readonly int reorderLevel;
-        private volatile bool continueProcessing = true;
-        private ManualResetEvent incomingMessageWaitHandle = new ManualResetEvent(false);
-        private int tcount = 0;
-        private DateTime lastCleaned = DateTime.Now.AddDays(-10);
-        private Exception stateException = null;
-        private QueueState state = QueueState.Running;
-        private FastFile fastFile = null;
+        private sealed class Lease
+        {
+            public Message Message;
+            public DateTime ExpiresUtc;
+        }
 
-        public InboundQueue(string name, string msgDir, FastFile fastFile,
-            double hoursReadSentLogsToLive, bool persistMessagesReadLogs,
+        private readonly CachingQueue<Message> queue;
+        private readonly IMessageStore store;
+        private readonly StorageOptions options;
+        private readonly TimeSpan? visibilityTimeout;
+        private readonly object leaseLock = new object();
+        private readonly Dictionary<Guid, Lease> leases = new Dictionary<Guid, Lease>();
+        private readonly ManualResetEvent incomingSignal = new ManualResetEvent(false);
+        private readonly Timer leaseTimer;
+        private volatile bool continueProcessing = true;
+        private long sequence;
+        private Exception stateException;
+        private QueueState state = QueueState.Running;
+
+        public InboundQueue(IMessageStore store, StorageOptions options, TimeSpan? visibilityTimeout,
             int maxMessagesInMemory, int reorderLevel)
         {
-            this.name = name;
-            this.msgDir = msgDir;
-            this.fastFile = fastFile;
-            this.hoursReadSentLogsToLive = hoursReadSentLogsToLive;
-            this.persistMessagesReadLogs = persistMessagesReadLogs;
-            this.maxMessagesInMemory = maxMessagesInMemory;
-            this.reorderLevel = reorderLevel;
-
-            this.inDir = Path.Combine(msgDir, "in");
-            this.readDir = Path.Combine(msgDir, "read");
-            Directory.CreateDirectory(this.inDir);
-            Directory.CreateDirectory(this.readDir);
-
-            try
-            {
-                this.mq = new CachingQueue<Message>(inDir, fastFile, 
-                    Message.ReadFromFile, "*.imq", maxMessagesInMemory, reorderLevel);
-            }
-            catch (Exception e)
-            {
-                this.stateException = e;
-                this.state = QueueState.Failed;
-                throw;
-            }
-            if (mq.Count > 0) incomingMessageWaitHandle.Set();
+            this.store = store;
+            this.options = options;
+            this.visibilityTimeout = visibilityTimeout;
+            queue = new CachingQueue<Message>(store, StorageArea.Incoming, ".imq", Message.Deserialize,
+                x => x.ToString(), maxMessagesInMemory, reorderLevel, options.Durability);
+            if (queue.Count > 0) incomingSignal.Set();
+            if (visibilityTimeout.HasValue)
+                leaseTimer = new Timer(RequeueExpiredLeases, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         }
 
-        public int Count
-        {
-            get
-            {
-                return mq.Count;
-            }
-        }
-
-        public Exception StateException
-        {
-            get { return stateException; }
-        }
-
-        public QueueState State
-        {
-            get { return state; }
-        }
+        public int Count { get { return queue.Count; } }
+        public Exception StateException { get { return stateException ?? queue.ReloadException ?? store.LastException; } }
+        public QueueState State { get { return state == QueueState.Failed ? state : StateException == null ? state : QueueState.Cautioned; } }
 
         public void ClearState()
         {
             stateException = null;
             state = QueueState.Running;
+            queue.ClearException();
+            store.ClearException();
         }
 
         public void Stop()
         {
+            continueProcessing = false;
+            incomingSignal.Set();
+            if (leaseTimer != null) leaseTimer.Dispose();
+            incomingSignal.Dispose();
+        }
+
+        public void Enqueue(Message message)
+        {
             try
             {
-                continueProcessing = false;
-                incomingMessageWaitHandle.Set();
-#if (!NET35)
-                incomingMessageWaitHandle.Dispose();
-#else
-                incomingMessageWaitHandle.Close();
-#endif
+                var key = NewKey(".imq");
+                message.Filename = key;
+                queue.Enqueue(key, message);
+                if (continueProcessing) incomingSignal.Set();
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                this.stateException = e;
-                this.state = QueueState.Failed;
+                stateException = ex;
+                state = QueueState.Failed;
                 throw;
             }
         }
 
-        public void Enqueue(Message msg)
-        {
-            //write to q file for that address
-            //yyyyMMddHHmmssfff-16bit-from-to-ipport-or-pipename
-            //20140324142165412-0415-010-042-024-155-08746-pipename.omq
-
-            //assure no possibility of a duplicate
-            var loc = Interlocked.Increment(ref tcount);
-
-            var fileName = string.Format("{0}-{1}-{2}.imq",
-                msg.Sent.ToString(DtFormat),
-                loc.ToString("0000"),
-                msg.From.ToFileNameString());
-
-            msg.Filename = Path.Combine(this.inDir, fileName);
-            mq.Enqueue(msg.Filename, msg);
-
-            //increment and roll tcount - max 9000
-            if (loc > 9000) Interlocked.Exchange(ref tcount, 0);
-
-            //signal received
-            if (continueProcessing) incomingMessageWaitHandle.Set();
-        }
-
         public void ReEnqueue(Message message)
         {
-            mq.ReEnqueue(message.Filename, message);
+            lock (leaseLock) leases.Remove(message.Id);
+            queue.ReEnqueue(message.Filename, message);
+            incomingSignal.Set();
         }
 
         public Message Receive(int timeoutMs, bool logRead = true)
         {
             while (continueProcessing)
             {
-                if (incomingMessageWaitHandle.WaitOne(timeoutMs))
+                if (!incomingSignal.WaitOne(timeoutMs)) break;
+                if (!continueProcessing) break;
+                var message = queue.Dequeue();
+                if (message == null)
                 {
-                    if (!continueProcessing) break;
-                    Message message = mq.Dequeue();
-                    if (null == message)
-                    {
-                        //set to nonsignaled and block on WaitOne again
-                        incomingMessageWaitHandle.Reset();
-                        continue; //loop again
-                    }
-                    if (logRead)
-                    {
-                        LogRead(message);
-                    }
-                    return message;
+                    incomingSignal.Reset();
+                    continue;
                 }
-                else
-                {
-                    break; //timedout
-                }
+                if (logRead) Complete(message);
+                else RegisterLease(message);
+                return message;
             }
             return null;
         }
 
-        public IList<Message> ReceiveBulk(int maxMessagesToReceive, 
-            int timeoutMs, bool logRead = true)
+        public IList<Message> ReceiveBulk(int maxMessagesToReceive, int timeoutMs, bool logRead = true)
         {
             if (maxMessagesToReceive < 1) maxMessagesToReceive = 1;
             while (continueProcessing)
             {
-                if (incomingMessageWaitHandle.WaitOne(timeoutMs))
+                if (!incomingSignal.WaitOne(timeoutMs)) break;
+                if (!continueProcessing) break;
+                var messages = queue.DequeueBulk(maxMessagesToReceive);
+                if (messages.Count == 0)
                 {
-                    if (!continueProcessing) break;
-                    IList<Message> messages = mq.DequeueBulk(maxMessagesToReceive);
-                    if (messages.Count == 0)
-                    {
-                        //set to nonsignaled and block on WaitOne again
-                        incomingMessageWaitHandle.Reset();
-                        continue; //loop again
-                    }
-                    if (logRead)
-                    {
-                        LogRead(messages);
-                    }
-                    return messages;
+                    incomingSignal.Reset();
+                    continue;
                 }
-                else
+                foreach (var message in messages)
                 {
-                    break; //timedout
+                    if (logRead) Complete(message);
+                    else RegisterLease(message);
                 }
+                return messages;
             }
-            return new List<Message>(); //empty rather than null
-        }
-
-        private const string DtLogFormat = "yyyyMMdd-HH-mm";
-
-        private void LogRead(Message message)
-        {
-            LogRead(new [] { message });
-        }
-
-        private void LogRead(IEnumerable<Message> messages)
-        {
-            foreach (var message in messages)
-            {
-                try
-                {
-                    if (persistMessagesReadLogs)
-                    {
-                        var fileName = string.Format("read-{0}.log", DateTime.Now.ToString(DtLogFormat));
-                        var logFile = Path.Combine(this.readDir, fileName);
-                        var line = message.ToString().ToFlatLine();
-                        fastFile.AppendAllLines(logFile, new string[] { line });
-                    }
-                    //File.Delete(message.Filename);
-                    fastFile.Delete(message.Filename);
-                }
-                catch (Exception e)
-                {
-                    this.stateException = e;
-                    this.state = QueueState.Cautioned;
-                }
-            }
-
-            //cleanup every two hours
-            if (persistMessagesReadLogs && (DateTime.Now - lastCleaned).TotalHours > 2.0)
-            {
-                lastCleaned = DateTime.Now;
-                Task.Factory.StartNew(() =>
-                {
-                    try
-                    {
-                        var files = Directory.GetFiles(this.readDir);
-                        foreach (var file in files)
-                        {
-                            var info = new FileInfo(file);
-                            if ((DateTime.Now - info.LastWriteTime).TotalHours > this.hoursReadSentLogsToLive)
-                            {
-                                fastFile.Delete(file);
-                            }
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        this.stateException = e;
-                        this.state = QueueState.Cautioned;
-                    }
-                }, TaskCreationOptions.LongRunning);
-            }
+            return new List<Message>();
         }
 
         public void Acknowledge(Message message)
         {
-            LogRead(message);
+            if (message == null) throw new ArgumentNullException("message");
+            lock (leaseLock) leases.Remove(message.Id);
+            Complete(message);
+        }
+
+        private void Complete(Message message)
+        {
+            try
+            {
+                var audit = CreateAudit(message, options.ReadAuditPayload);
+                if (audit != null) store.Append(StorageArea.Read, AuditKey("read"), audit, options.Durability);
+                store.Delete(StorageArea.Incoming, message.Filename);
+            }
+            catch (Exception ex)
+            {
+                stateException = ex;
+                state = QueueState.Cautioned;
+                throw;
+            }
+        }
+
+        private void RegisterLease(Message message)
+        {
+            if (!visibilityTimeout.HasValue) return;
+            lock (leaseLock)
+                leases[message.Id] = new Lease { Message = message, ExpiresUtc = DateTime.UtcNow + visibilityTimeout.Value };
+        }
+
+        private void RequeueExpiredLeases(object ignored)
+        {
+            try
+            {
+                Lease[] expired;
+                lock (leaseLock)
+                {
+                    expired = leases.Values.Where(x => x.ExpiresUtc <= DateTime.UtcNow).ToArray();
+                    foreach (var lease in expired) leases.Remove(lease.Message.Id);
+                }
+                foreach (var lease in expired) queue.ReEnqueue(lease.Message.Filename, lease.Message);
+                if (expired.Length > 0) incomingSignal.Set();
+            }
+            catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
+        }
+
+        private string NewKey(string suffix)
+        {
+            return DateTime.UtcNow.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture) + "-" +
+                Interlocked.Increment(ref sequence).ToString("D10", CultureInfo.InvariantCulture) + "-" +
+                Guid.NewGuid().ToString("N") + suffix;
+        }
+
+        private static string AuditKey(string prefix)
+        {
+            return prefix + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HH-mm", CultureInfo.InvariantCulture) + ".log";
+        }
+
+        private static string CreateAudit(Message message, AuditPayloadMode mode)
+        {
+            if (mode == AuditPayloadMode.None) return null;
+            if (mode == AuditPayloadMode.Full) return message.ToString();
+            return string.Join("\t", "meta", message.Id, message.From, message.Sent.ToString("o", CultureInfo.InvariantCulture),
+                message.Received.ToString("o", CultureInfo.InvariantCulture), message.SendAttempt, message.MessageTypeName,
+                message.MessageBytes == null ? (message.MessageString ?? string.Empty).Length : message.MessageBytes.Length);
         }
     }
 }

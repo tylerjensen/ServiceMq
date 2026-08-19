@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 500" role="img" aria-labelledby="title desc">
+  <title id="title">Outgoing and incoming message lifecycles</title>
+  <desc id="desc">Outgoing messages retry until sent or dead-lettered. Incoming messages are completed immediately by Receive or after acknowledgement by Accept.</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#475569"/></marker><style>.h{font:700 18px system-ui,sans-serif;fill:#0f172a}.t{font:600 15px system-ui,sans-serif;fill:#0f172a}.s{font:13px system-ui,sans-serif;fill:#475569}.b{stroke-width:2;rx:13}.l{stroke:#475569;stroke-width:2.5;fill:none;marker-end:url(#a)}</style></defs>
+  <rect width="980" height="500" rx="24" fill="#f8fafc"/>
+  <text x="40" y="42" class="h">Outgoing delivery</text>
+  <rect x="40" y="75" width="145" height="72" class="b" fill="#dbeafe" stroke="#2563eb"/><text x="112" y="118" text-anchor="middle" class="t">Queued</text>
+  <rect x="245" y="75" width="145" height="72" class="b" fill="#fef3c7" stroke="#d97706"/><text x="317" y="108" text-anchor="middle" class="t">Delivering</text><text x="317" y="129" text-anchor="middle" class="s">attempt n</text>
+  <rect x="450" y="75" width="145" height="72" class="b" fill="#dcfce7" stroke="#16a34a"/><text x="522" y="118" text-anchor="middle" class="t">Sent</text>
+  <rect x="245" y="190" width="145" height="72" class="b" fill="#ffedd5" stroke="#ea580c"/><text x="317" y="220" text-anchor="middle" class="t">Retry wait</text><text x="317" y="241" text-anchor="middle" class="s">exponential delay</text>
+  <rect x="450" y="190" width="175" height="72" class="b" fill="#fee2e2" stroke="#dc2626"/><text x="537" y="220" text-anchor="middle" class="t">Dead letter</text><text x="537" y="241" text-anchor="middle" class="s">policy exhausted</text>
+  <path d="M185 111h55" class="l"/><path d="M390 111h55" class="l"/><path d="M317 147v38" class="l"/><path d="M245 226h-75v-65h68" class="l"/><path d="M390 226h55" class="l"/><path d="M537 267v36H112V152" class="l" stroke-dasharray="7 6"/><text x="355" y="296" text-anchor="middle" class="s">operator replay</text>
+  <text x="40" y="348" class="h">Incoming consumption</text>
+  <rect x="40" y="380" width="145" height="72" class="b" fill="#dbeafe" stroke="#2563eb"/><text x="112" y="423" text-anchor="middle" class="t">Stored</text>
+  <rect x="250" y="340" width="180" height="66" class="b" fill="#dcfce7" stroke="#16a34a"/><text x="340" y="369" text-anchor="middle" class="t">Receive</text><text x="340" y="390" text-anchor="middle" class="s">complete on return</text>
+  <rect x="250" y="430" width="180" height="55" class="b" fill="#ede9fe" stroke="#7c3aed"/><text x="340" y="463" text-anchor="middle" class="t">Accept</text>
+  <rect x="500" y="430" width="180" height="55" class="b" fill="#dcfce7" stroke="#16a34a"/><text x="590" y="463" text-anchor="middle" class="t">Acknowledge</text>
+  <path d="M185 405l60-24" class="l"/><path d="M185 427l60 23" class="l"/><path d="M430 457h65" class="l"/><path d="M340 430v-15H112v-32" class="l" stroke-dasharray="7 6"/><text x="235" y="420" class="s">visibility timeout</text>
+</svg>

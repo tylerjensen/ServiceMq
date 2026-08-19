@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 430" role="img" aria-labelledby="title desc">
+  <title id="title">File storage layout</title><desc id="desc">The queue root separates active incoming and outgoing messages from audit, dead-letter, and corrupt records.</desc>
+  <defs><style>.h{font:700 19px system-ui,sans-serif;fill:#0f172a}.t{font:600 16px system-ui,sans-serif;fill:#0f172a}.s{font:13px system-ui,sans-serif;fill:#475569}.b{stroke-width:2;rx:14}.l{stroke:#64748b;stroke-width:2;fill:none}</style></defs>
+  <rect width="900" height="430" rx="24" fill="#f8fafc"/>
+  <rect x="330" y="30" width="240" height="70" class="b" fill="#dbeafe" stroke="#2563eb"/><text x="450" y="60" text-anchor="middle" class="h">Queue root</text><text x="450" y="83" text-anchor="middle" class="s">one live owner</text>
+  <path d="M450 100v40M125 140h650M125 140v35M350 140v35M560 140v35M775 140v35" class="l"/>
+  <rect x="35" y="175" width="180" height="95" class="b" fill="#dcfce7" stroke="#16a34a"/><text x="125" y="210" text-anchor="middle" class="t">in</text><text x="125" y="234" text-anchor="middle" class="s">active incoming</text><text x="125" y="254" text-anchor="middle" class="s">visibility state</text>
+  <rect x="260" y="175" width="180" height="95" class="b" fill="#dcfce7" stroke="#16a34a"/><text x="350" y="210" text-anchor="middle" class="t">out</text><text x="350" y="234" text-anchor="middle" class="s">active outgoing</text><text x="350" y="254" text-anchor="middle" class="s">retry state</text>
+  <rect x="470" y="175" width="180" height="95" class="b" fill="#fef3c7" stroke="#d97706"/><text x="560" y="210" text-anchor="middle" class="t">sent · read</text><text x="560" y="234" text-anchor="middle" class="s">optional audit</text><text x="560" y="254" text-anchor="middle" class="s">retention applies</text>
+  <rect x="685" y="175" width="180" height="95" class="b" fill="#fee2e2" stroke="#dc2626"/><text x="775" y="210" text-anchor="middle" class="t">fail</text><text x="775" y="234" text-anchor="middle" class="s">dead letters</text><text x="775" y="254" text-anchor="middle" class="s">and corrupt entries</text>
+  <rect x="105" y="325" width="690" height="65" class="b" fill="#ede9fe" stroke="#7c3aed"/><text x="450" y="354" text-anchor="middle" class="t">Provider boundary</text><text x="450" y="376" text-anchor="middle" class="s">The same queue API can be backed by files, memory, SQLite, or a custom IMessageStore.</text>
+</svg>

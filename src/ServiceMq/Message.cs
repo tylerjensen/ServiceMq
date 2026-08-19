@@ -40,27 +40,47 @@ namespace ServiceMq
         //id   from   sentts   receivedts   sentattempts   msgtypename   bin/str   message(binbase64)
         public override string ToString()
         {
-            return string.Format("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}",
+            return string.Format("v2\t{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}",
                 Id,
-                From,
-                Sent.ToString(DtFormat),
-                Received.ToString(DtFormat),
+                Encode(From.ToString()),
+                Sent.ToBinary(),
+                Received.ToBinary(),
                 SendAttempt,
-                MessageTypeName,
+                Encode(MessageTypeName),
                 MessageBytes == null ? "str" : "bin",
-                MessageBytes == null ? MessageString : Convert.ToBase64String(MessageBytes));
+                MessageBytes == null ? Encode(MessageString) : Convert.ToBase64String(MessageBytes));
         }
 
         public static Message ReadFromFile(string fileName, FastFile fastFile)
         {
             //id   from   sentts   receivedts   sentattempts   msgtypename   bin/str   message(binbase64)
             var text = fastFile.ReadAllText(fileName);
+            return Deserialize(fileName, text);
+        }
+
+        internal static Message Deserialize(string key, string text)
+        {
             var parts = text.Split('\t');
+            if (parts.Length == 9 && parts[0] == "v2")
+            {
+                return new Message
+                {
+                    Filename = key,
+                    Id = Guid.Parse(parts[1]),
+                    From = Address.FromString(Decode(parts[2])),
+                    Sent = DateTime.FromBinary(Convert.ToInt64(parts[3], CultureInfo.InvariantCulture)),
+                    Received = DateTime.FromBinary(Convert.ToInt64(parts[4], CultureInfo.InvariantCulture)),
+                    SendAttempt = Convert.ToInt32(parts[5], CultureInfo.InvariantCulture),
+                    MessageTypeName = Decode(parts[6]),
+                    MessageString = parts[7] == "bin" ? null : Decode(parts[8]),
+                    MessageBytes = parts[7] != "bin" ? null : Convert.FromBase64String(parts[8])
+                };
+            }
             if (parts.Length == 8)
             {
                 var msg = new Message()
                 {
-                    Filename = fileName,
+                    Filename = key,
 #if (!NET35)
                     Id = Guid.Parse(parts[0]),
 #else
@@ -77,6 +97,16 @@ namespace ServiceMq
                 return msg;
             }
             return null;
+        }
+
+        private static string Encode(string value)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? string.Empty));
+        }
+
+        private static string Decode(string value)
+        {
+            return Encoding.UTF8.GetString(Convert.FromBase64String(value));
         }
 
 

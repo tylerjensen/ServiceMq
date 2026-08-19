@@ -1,77 +1,64 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace ServiceMq
 {
-    internal class CachingQueue<T>
+    internal sealed class CachingQueue<T>
     {
+        private sealed class QueueEntry { public string Key; public T Value; }
+
         private readonly int reorderQty;
         private readonly object syncRoot = new object();
-        private readonly string msgDir;
         private readonly int maxMessagesInMemory;
         private readonly int reorderLevel;
         private readonly bool persistMessages;
+        private readonly bool validateExistence;
         private readonly Queue<string> keysQueue;
-        private readonly Queue<T> messageQueue;
-        private readonly Func<string, FastFile, T> loadFromFile;
-        private readonly FastFile fastFile;
+        private readonly Queue<QueueEntry> messageQueue;
+        private readonly Func<string, string, T> deserialize;
+        private readonly Func<T, string> serialize;
+        private readonly IMessageStore store;
+        private readonly StorageArea area;
+        private readonly DurabilityMode durability;
+        private readonly string suffix;
+        private int reloading;
+        private Exception reloadException;
 
-        private volatile bool reloading = false;
-        private Exception reloadException = null;
         public Exception ReloadException { get { return reloadException; } }
+        public void ClearException() { reloadException = null; }
 
-        public CachingQueue(string msgDir, FastFile fastFile, Func<string, FastFile, T> loadFromFile, string filePattern,
-            int maxMessagesInMemory, int reorderLevel, bool persistMessages = true)
+        public CachingQueue(IMessageStore store, StorageArea area, string suffix,
+            Func<string, string, T> deserialize, Func<T, string> serialize,
+            int maxMessagesInMemory, int reorderLevel, DurabilityMode durability, bool persistMessages = true,
+            bool validateExistence = true)
         {
-            this.msgDir = msgDir;
-            this.fastFile = fastFile;
-            this.loadFromFile = loadFromFile;
-            this.maxMessagesInMemory = maxMessagesInMemory < 128
-                ? 128
-                : maxMessagesInMemory;
-            this.reorderLevel = reorderLevel > this.maxMessagesInMemory
-                ? this.maxMessagesInMemory / 2
-                : reorderLevel < 64
-                    ? 64
-                    : reorderLevel;
-
-            //don't want to read too many at one time
-            this.reorderQty = this.reorderLevel > 2048
-                ? 512
-                : this.reorderLevel / 4;
-
+            this.store = store;
+            this.area = area;
+            this.suffix = suffix;
+            this.deserialize = deserialize;
+            this.serialize = serialize;
+            this.maxMessagesInMemory = Math.Max(1, maxMessagesInMemory);
+            this.reorderLevel = Math.Max(1, Math.Min(reorderLevel, this.maxMessagesInMemory));
+            reorderQty = Math.Max(1, this.reorderLevel > 2048 ? 512 : this.reorderLevel / 4);
+            this.durability = durability;
             this.persistMessages = persistMessages;
-            this.keysQueue = new Queue<string>(this.maxMessagesInMemory);
-            this.messageQueue = new Queue<T>(this.maxMessagesInMemory);
-            if (persistMessages) Initialize(filePattern);
+            this.validateExistence = validateExistence;
+            keysQueue = new Queue<string>(this.maxMessagesInMemory);
+            messageQueue = new Queue<QueueEntry>(this.maxMessagesInMemory);
+            if (persistMessages) Initialize();
         }
 
-        private void Initialize(string filePattern)
+        private void Initialize()
         {
             lock (syncRoot)
             {
-                // hydrate from any messages already in files
-                var list = new List<string>(Directory.GetFiles(msgDir, filePattern));
-                if (list.Count > 0)
+                foreach (var key in store.GetKeys(area).Where(x => x.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)))
                 {
-                    list.Sort();
-                    foreach (var msgFile in list)
-                    {
-                        if (messageQueue.Count < maxMessagesInMemory)
-                        {
-                            var msg = loadFromFile(msgFile, fastFile);
-                            messageQueue.Enqueue(msg);
-                        }
-                        else
-                        {
-                            keysQueue.Enqueue(msgFile);
-                        }
-                    }
+                    if (messageQueue.Count < maxMessagesInMemory) LoadIntoMemory(key);
+                    else keysQueue.Enqueue(key);
                 }
             }
         }
@@ -80,11 +67,11 @@ namespace ServiceMq
         {
             lock (syncRoot)
             {
-                if (messageQueue.Count > 0)
+                while (messageQueue.Count > 0)
                 {
-                    var msg = messageQueue.Dequeue();
+                    var entry = messageQueue.Dequeue();
                     RefillCheck();
-                    return msg;
+                    if (!validateExistence || store.Contains(area, entry.Key)) return entry.Value;
                 }
                 return default(T);
             }
@@ -92,31 +79,28 @@ namespace ServiceMq
 
         public IList<T> DequeueBulk(int maxMessagesToReceive)
         {
+            var result = new List<T>(maxMessagesToReceive);
             lock (syncRoot)
             {
-                if (messageQueue.Count > 0)
+                while (result.Count < maxMessagesToReceive && messageQueue.Count > 0)
                 {
-                    var list = new List<T>(maxMessagesToReceive);
-                    while (list.Count < maxMessagesToReceive && messageQueue.Count > 0)
-                    {
-                        var msg = messageQueue.Dequeue();
-                        list.Add(msg);
-                    }
-                    RefillCheck();
-                    return list;
+                    var entry = messageQueue.Dequeue();
+                    if (!validateExistence || store.Contains(area, entry.Key)) result.Add(entry.Value);
                 }
-                return new List<T>();
+                RefillCheck();
             }
+            return result;
         }
 
         public T Peek()
         {
             lock (syncRoot)
             {
-                if (messageQueue.Count > 0)
+                while (messageQueue.Count > 0)
                 {
-                    var msg = messageQueue.Peek();
-                    return msg;
+                    var entry = messageQueue.Peek();
+                    if (!validateExistence || store.Contains(area, entry.Key)) return entry.Value;
+                    messageQueue.Dequeue();
                 }
                 return default(T);
             }
@@ -124,21 +108,12 @@ namespace ServiceMq
 
         public void Enqueue(string key, T message)
         {
-            if (persistMessages)
-            {
-                var line = message.ToString();
-                fastFile.WriteAllText(key, line);
-            }
+            if (persistMessages) store.Write(area, key, serialize(message), durability);
             lock (syncRoot)
             {
                 if (messageQueue.Count < maxMessagesInMemory && keysQueue.Count == 0)
-                {
-                    messageQueue.Enqueue(message);
-                }
-                else
-                {
-                    keysQueue.Enqueue(key);
-                }
+                    messageQueue.Enqueue(new QueueEntry { Key = key, Value = message });
+                else keysQueue.Enqueue(key);
             }
         }
 
@@ -147,72 +122,58 @@ namespace ServiceMq
             lock (syncRoot)
             {
                 if (messageQueue.Count < maxMessagesInMemory && keysQueue.Count == 0)
-                {
-                    messageQueue.Enqueue(message);
-                }
-                else
-                {
-                    keysQueue.Enqueue(key);
-                }
+                    messageQueue.Enqueue(new QueueEntry { Key = key, Value = message });
+                else keysQueue.Enqueue(key);
             }
         }
 
-        public int Count
-        {
-            get
-            {
-                lock (syncRoot)
-                {
-                    return messageQueue.Count + keysQueue.Count;
-                }
-            }
-        }
+        public int Count { get { lock (syncRoot) return messageQueue.Count + keysQueue.Count; } }
 
         private void RefillCheck()
         {
-            if (keysQueue.Count > 0 && messageQueue.Count < reorderLevel)
-            {
-                RefillMessageQueueAsync();
-            }
+            if (keysQueue.Count > 0 && messageQueue.Count < reorderLevel) RefillMessageQueueAsync();
         }
 
         private void RefillMessageQueueAsync()
         {
-            if (reloading) return; //don't run more than one at a time
+            if (Interlocked.CompareExchange(ref reloading, 1, 0) != 0) return;
             Task.Factory.StartNew(() =>
             {
-                reloading = true;
-                while (true)
+                try
                 {
-                    lock (syncRoot)
+                    while (true)
                     {
-                        try
+                        lock (syncRoot)
                         {
                             var loadCount = 0;
-                            //don't load more than ReorderQty per lock obtained
-                            while (keysQueue.Count > 0
-                                && loadCount < reorderQty
-                                && messageQueue.Count < maxMessagesInMemory)
+                            while (keysQueue.Count > 0 && loadCount < reorderQty && messageQueue.Count < maxMessagesInMemory)
                             {
-                                var key = keysQueue.Dequeue();
-                                var msg = loadFromFile(key, fastFile);
-                                messageQueue.Enqueue(msg);
+                                LoadIntoMemory(keysQueue.Dequeue());
                                 loadCount++;
                             }
+                            if (keysQueue.Count == 0 || messageQueue.Count >= maxMessagesInMemory) break;
                         }
-                        catch (Exception e)
-                        {
-                            reloadException = e;
-                        }
-                        if (keysQueue.Count == 0 || messageQueue.Count >= maxMessagesInMemory)
-                        {
-                            break;  //escape the refill loop
-                        }
+                        Thread.Sleep(1);
                     }
-                    Thread.Sleep(1); //allow lock competitor on dequeue to break in
                 }
-                reloading = false;
+                catch (Exception ex) { reloadException = ex; }
+                finally { Interlocked.Exchange(ref reloading, 0); }
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
+        private void LoadIntoMemory(string key)
+        {
+            try
+            {
+                var value = deserialize(key, store.Read(area, key).Value);
+                if (object.Equals(value, default(T))) throw new FormatException("The stored message is empty or invalid.");
+                messageQueue.Enqueue(new QueueEntry { Key = key, Value = value });
+            }
+            catch (Exception ex)
+            {
+                reloadException = ex;
+                try { store.Move(area, StorageArea.Corrupt, key); } catch { }
+            }
         }
     }
 }

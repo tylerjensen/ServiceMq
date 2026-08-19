@@ -26,12 +26,33 @@ namespace ServiceMq
         {
             //idguid   address-from   address-to   senttimestamp   msgtypename   bin/str   message(base64forbin)
             var text = fastFile.ReadAllText(fileName);
+            return Deserialize(fileName, text);
+        }
+
+        internal static OutboundMessage Deserialize(string key, string text)
+        {
             var parts = text.Split('\t');
+            if (parts.Length == 10 && parts[0] == "v2")
+            {
+                return new OutboundMessage
+                {
+                    Filename = key,
+                    Id = Guid.Parse(parts[1]),
+                    From = Address.FromString(Decode(parts[2])),
+                    To = Address.FromString(Decode(parts[3])),
+                    Sent = DateTime.FromBinary(Convert.ToInt64(parts[4], CultureInfo.InvariantCulture)),
+                    MessageTypeName = Decode(parts[5]),
+                    MessageString = parts[6] == "bin" ? null : Decode(parts[7]),
+                    MessageBytes = parts[6] != "bin" ? null : Convert.FromBase64String(parts[7]),
+                    SendAttempts = Convert.ToInt32(parts[8], CultureInfo.InvariantCulture),
+                    LastSendAttempt = DateTime.FromBinary(Convert.ToInt64(parts[9], CultureInfo.InvariantCulture))
+                };
+            }
             if (parts.Length == 7)
             {
                 var msg = new OutboundMessage()
                 {
-                    Filename = fileName,
+                    Filename = key,
 #if (!NET35)
                     Id = Guid.Parse(parts[0]),
 #else
@@ -52,15 +73,27 @@ namespace ServiceMq
         public override string ToString()
         {
             //idguid   address-from   address-to   senttimestamp   msgtypename   bin/str   message(base64forbin)
-            var line = string.Format("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}",
+            var line = string.Format("v2\t{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}\t{8}",
                 Id,
-                From,
-                To,
-                Sent.ToString(DtFormat),
-                MessageTypeName,
+                Encode(From.ToString()),
+                Encode(To.ToString()),
+                Sent.ToBinary(),
+                Encode(MessageTypeName),
                 MessageBytes == null ? "str" : "bin",
-                MessageBytes == null ? MessageString : Convert.ToBase64String(MessageBytes));
+                MessageBytes == null ? Encode(MessageString) : Convert.ToBase64String(MessageBytes),
+                SendAttempts,
+                LastSendAttempt.ToBinary());
             return line;
+        }
+
+        private static string Encode(string value)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? string.Empty));
+        }
+
+        private static string Decode(string value)
+        {
+            return Encoding.UTF8.GetString(Convert.FromBase64String(value));
         }
     }
 }
