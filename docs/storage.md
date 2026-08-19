@@ -68,7 +68,9 @@ Storage = new StorageOptions
 ```
 
 SQLite lives in its own package so applications using file or memory storage do not
-receive SQLite native dependencies.
+receive SQLite native dependencies. It uses WAL mode with `synchronous=FULL`; durable
+transactions are committed to the WAL without forcing a checkpoint after every
+message. `FlushStorage()` and orderly disposal perform an explicit full checkpoint.
 
 ### Custom provider
 

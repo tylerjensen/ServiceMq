@@ -10,6 +10,7 @@ namespace ServiceMq
     {
         private readonly string rootPath;
         private readonly FileStream lockFile;
+        private readonly object appendLock = new object();
         private Exception lastException;
 
         public Exception LastException { get { return lastException; } }
@@ -81,13 +82,16 @@ namespace ServiceMq
         {
             try
             {
-                var path = GetPath(area, key);
-                using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
-                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                lock (appendLock)
                 {
-                    writer.WriteLine(value);
-                    writer.Flush();
-                    if (durability == DurabilityMode.FlushToDisk) stream.Flush(true);
+                    var path = GetPath(area, key);
+                    using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                    {
+                        writer.WriteLine(value);
+                        writer.Flush();
+                        if (durability == DurabilityMode.FlushToDisk) stream.Flush(true);
+                    }
                 }
             }
             catch (Exception ex) { lastException = ex; throw; }

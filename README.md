@@ -126,6 +126,7 @@ var queue = new MessageQueue(new MessageQueueOptions
     },
     Delivery = new DeliveryOptions
     {
+        MaxConcurrentDestinations = 8,
         MaxAttempts = 100,
         MaxAge = TimeSpan.FromDays(1),
         InitialRetryDelay = TimeSpan.FromSeconds(1),
@@ -142,7 +143,9 @@ See [Storage](docs/storage.md) for every option and provider.
 - Outgoing and incoming records are stored before their respective RPC calls return.
 - Delivery is **at least once**. A crash in the final acknowledgment window can produce
   a duplicate, so consumers should treat `Message.Id` as an idempotency key.
-- Messages retain order for a destination while it is unavailable.
+- Messages sent by one `MessageQueue` are delivered FIFO per destination, including
+  after an outage or restart. Concurrent sends are ordered when they enter the durable
+  outbound queue; ordering does not span separate sender processes.
 - File records use atomic replacement and malformed records are quarantined.
 - Legacy `.omq` and `.imq` records remain readable.
 

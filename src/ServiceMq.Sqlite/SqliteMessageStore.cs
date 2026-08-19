@@ -105,7 +105,6 @@ namespace ServiceMq
                         command.Parameters.AddWithValue("$now", now);
                         command.ExecuteNonQuery();
                     }
-                    if (durability == DurabilityMode.FlushToDisk) ExecuteNonQuery("PRAGMA wal_checkpoint(PASSIVE)");
                 }
                 catch (Exception ex) { lastException = ex; throw; }
             }
@@ -115,9 +114,29 @@ namespace ServiceMq
         {
             lock (syncRoot)
             {
-                string previous = null;
-                try { previous = Read(area, key).Value; } catch (KeyNotFoundException) { }
-                Write(area, key, previous == null ? value : previous + Environment.NewLine + value, durability);
+                try
+                {
+                    var now = DateTime.UtcNow.Ticks;
+                    var normalized = value ?? string.Empty;
+                    var separator = Environment.NewLine;
+                    using (var command = CreateCommand(
+                        "INSERT INTO queue_items(area,key,value,length,created_ticks,modified_ticks) " +
+                        "VALUES($area,$key,$value,$value_length,$now,$now) " +
+                        "ON CONFLICT(area,key) DO UPDATE SET " +
+                        "value=queue_items.value || $separator || $value," +
+                        "length=queue_items.length + $append_length,modified_ticks=$now"))
+                    {
+                        command.Parameters.AddWithValue("$area", (int)area);
+                        command.Parameters.AddWithValue("$key", key);
+                        command.Parameters.AddWithValue("$value", normalized);
+                        command.Parameters.AddWithValue("$separator", separator);
+                        command.Parameters.AddWithValue("$value_length", Encoding.UTF8.GetByteCount(normalized));
+                        command.Parameters.AddWithValue("$append_length", Encoding.UTF8.GetByteCount(separator + normalized));
+                        command.Parameters.AddWithValue("$now", now);
+                        command.ExecuteNonQuery();
+                    }
+                }
+                catch (Exception ex) { lastException = ex; throw; }
             }
         }
 

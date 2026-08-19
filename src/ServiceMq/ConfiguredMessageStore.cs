@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -11,6 +12,13 @@ namespace ServiceMq
         private readonly IMessageStore inner;
         private readonly StorageOptions options;
         private readonly bool disposeInner;
+        private readonly bool capacityEnabled;
+        private long incomingCount;
+        private long incomingBytes;
+        private long outgoingCount;
+        private long outgoingBytes;
+        private readonly Dictionary<string, long> incomingLengths = new Dictionary<string, long>(StringComparer.Ordinal);
+        private readonly Dictionary<string, long> outgoingLengths = new Dictionary<string, long>(StringComparer.Ordinal);
 
         public Exception LastException { get { return inner.LastException; } }
 
@@ -19,6 +27,16 @@ namespace ServiceMq
             this.inner = inner ?? throw new ArgumentNullException("inner");
             this.options = options ?? throw new ArgumentNullException("options");
             this.disposeInner = disposeInner;
+            capacityEnabled = options.MaxBytes.HasValue || options.MaxMessages.HasValue;
+            if (capacityEnabled)
+            {
+                var incoming = inner.GetStatistics(StorageArea.Incoming);
+                var outgoing = inner.GetStatistics(StorageArea.Outgoing);
+                incomingCount = incoming.Count;
+                incomingBytes = incoming.Bytes;
+                outgoingCount = outgoing.Count;
+                outgoingBytes = outgoing.Bytes;
+            }
         }
 
         public System.Collections.Generic.IReadOnlyList<string> GetKeys(StorageArea area)
@@ -30,7 +48,16 @@ namespace ServiceMq
 
         public StorageEntry Read(StorageArea area, string key)
         {
-            var entry = inner.Read(area, key);
+            StorageEntry entry;
+            if (capacityEnabled && IsActiveArea(area))
+            {
+                lock (capacityLock)
+                {
+                    entry = inner.Read(area, key);
+                    Lengths(area)[key] = entry.Length;
+                }
+            }
+            else entry = inner.Read(area, key);
             if (options.Protector != null && IsProtectedArea(area)) entry.Value = options.Protector.Unprotect(entry.Value);
             return entry;
         }
@@ -40,8 +67,12 @@ namespace ServiceMq
             var storedValue = options.Protector != null && IsProtectedArea(area)
                 ? options.Protector.Protect(value)
                 : value;
-            if (IsActiveArea(area)) EnsureCapacity(area, key, storedValue);
-            inner.Write(area, key, storedValue, durability);
+            if (!capacityEnabled || !IsActiveArea(area))
+            {
+                inner.Write(area, key, storedValue, durability);
+                return;
+            }
+            WriteWithCapacity(area, key, storedValue, durability);
         }
 
         public void Append(StorageArea area, string key, string value, DurabilityMode durability)
@@ -52,17 +83,77 @@ namespace ServiceMq
 
         public void Delete(StorageArea area, string key)
         {
-            inner.Delete(area, key);
+            if (!capacityEnabled || !IsActiveArea(area))
+            {
+                inner.Delete(area, key);
+                return;
+            }
+            lock (capacityLock)
+            {
+                long length;
+                var existed = TryGetLength(area, key, out length);
+                inner.Delete(area, key);
+                if (existed)
+                {
+                    AddToCounters(area, -1, -length);
+                    Lengths(area).Remove(key);
+                    Monitor.PulseAll(capacityLock);
+                }
+            }
         }
 
         public void Move(StorageArea source, StorageArea destination, string key)
         {
-            inner.Move(source, destination, key);
+            if (!capacityEnabled || !IsActiveArea(source) && !IsActiveArea(destination))
+            {
+                inner.Move(source, destination, key);
+                return;
+            }
+            if (source == destination) return;
+            lock (capacityLock)
+            {
+                long sourceLength;
+                long destinationLength;
+                var sourceExists = TryGetLength(source, key, out sourceLength);
+                var destinationExists = TryGetLength(destination, key, out destinationLength);
+                inner.Move(source, destination, key);
+                if (IsActiveArea(source) && sourceExists)
+                {
+                    AddToCounters(source, -1, -sourceLength);
+                    Lengths(source).Remove(key);
+                }
+                if (IsActiveArea(destination))
+                {
+                    if (destinationExists)
+                    {
+                        AddToCounters(destination, -1, -destinationLength);
+                        Lengths(destination).Remove(key);
+                    }
+                    if (sourceExists)
+                    {
+                        AddToCounters(destination, 1, sourceLength);
+                        Lengths(destination)[key] = sourceLength;
+                    }
+                }
+                Monitor.PulseAll(capacityLock);
+            }
         }
 
         public void Purge(StorageArea area, DateTime olderThanUtc)
         {
-            inner.Purge(area, olderThanUtc);
+            if (!capacityEnabled || !IsActiveArea(area))
+            {
+                inner.Purge(area, olderThanUtc);
+                return;
+            }
+            lock (capacityLock)
+            {
+                inner.Purge(area, olderThanUtc);
+                var statistics = inner.GetStatistics(area);
+                SetCounters(area, statistics.Count, statistics.Bytes);
+                Lengths(area).Clear();
+                Monitor.PulseAll(capacityLock);
+            }
         }
 
         public StorageAreaStatistics GetStatistics(StorageArea area)
@@ -74,23 +165,29 @@ namespace ServiceMq
         public void ClearException() { inner.ClearException(); }
         public void Dispose() { if (disposeInner) inner.Dispose(); }
 
-        private void EnsureCapacity(StorageArea area, string key, string value)
+        private void WriteWithCapacity(StorageArea area, string key, string value, DurabilityMode durability)
         {
-            if (!options.MaxBytes.HasValue && !options.MaxMessages.HasValue) return;
             var deadline = DateTime.UtcNow + options.FullWaitTimeout;
-            while (true)
+            lock (capacityLock)
             {
-                lock (capacityLock)
+                while (true)
                 {
-                    var incoming = inner.GetStatistics(StorageArea.Incoming);
-                    var outgoing = inner.GetStatistics(StorageArea.Outgoing);
-                    var exists = inner.GetKeys(area).Contains(key);
+                    long previousLength;
+                    var exists = TryGetLength(area, key, out previousLength);
                     var addedMessages = exists ? 0 : 1;
-                    long addedBytes = Encoding.UTF8.GetByteCount(value ?? string.Empty);
-                    if (exists) addedBytes -= inner.Read(area, key).Length;
-                    var messagesFit = !options.MaxMessages.HasValue || incoming.Count + outgoing.Count + addedMessages <= options.MaxMessages.Value;
-                    var bytesFit = !options.MaxBytes.HasValue || incoming.Bytes + outgoing.Bytes + addedBytes <= options.MaxBytes.Value;
-                    if (messagesFit && bytesFit) return;
+                    var valueLength = Encoding.UTF8.GetByteCount(value ?? string.Empty);
+                    var addedBytes = valueLength - previousLength;
+                    var messagesFit = !options.MaxMessages.HasValue ||
+                        incomingCount + outgoingCount + addedMessages <= options.MaxMessages.Value;
+                    var bytesFit = !options.MaxBytes.HasValue ||
+                        incomingBytes + outgoingBytes + addedBytes <= options.MaxBytes.Value;
+                    if (messagesFit && bytesFit)
+                    {
+                        inner.Write(area, key, value, durability);
+                        AddToCounters(area, addedMessages, addedBytes);
+                        Lengths(area)[key] = valueLength;
+                        return;
+                    }
 
                     if (options.FullBehavior == QueueFullBehavior.DropOldest)
                     {
@@ -98,9 +195,11 @@ namespace ServiceMq
                         continue;
                     }
                     if (options.FullBehavior == QueueFullBehavior.Reject) throw CapacityException();
+
+                    var remaining = deadline - DateTime.UtcNow;
+                    if (remaining <= TimeSpan.Zero) throw CapacityException();
+                    Monitor.Wait(capacityLock, remaining);
                 }
-                if (DateTime.UtcNow >= deadline) throw CapacityException();
-                Thread.Sleep(25);
             }
         }
 
@@ -121,7 +220,53 @@ namespace ServiceMq
             }
             if (!selectedArea.HasValue) return false;
             inner.Delete(selectedArea.Value, selected.Key);
+            AddToCounters(selectedArea.Value, -1, -selected.Length);
+            Lengths(selectedArea.Value).Remove(selected.Key);
+            Monitor.PulseAll(capacityLock);
             return true;
+        }
+
+        private bool TryGetLength(StorageArea area, string key, out long length)
+        {
+            if (IsActiveArea(area) && Lengths(area).TryGetValue(key, out length)) return true;
+            length = 0;
+            if (!inner.Contains(area, key)) return false;
+            length = inner.Read(area, key).Length;
+            if (IsActiveArea(area)) Lengths(area)[key] = length;
+            return true;
+        }
+
+        private Dictionary<string, long> Lengths(StorageArea area)
+        {
+            return area == StorageArea.Incoming ? incomingLengths : outgoingLengths;
+        }
+
+        private void AddToCounters(StorageArea area, long count, long bytes)
+        {
+            if (area == StorageArea.Incoming)
+            {
+                incomingCount += count;
+                incomingBytes += bytes;
+            }
+            else if (area == StorageArea.Outgoing)
+            {
+                outgoingCount += count;
+                outgoingBytes += bytes;
+            }
+        }
+
+        private void SetCounters(StorageArea area, long count, long bytes)
+        {
+            if (area == StorageArea.Incoming)
+            {
+                incomingCount = count;
+                incomingBytes = bytes;
+            }
+            else if (area == StorageArea.Outgoing)
+            {
+                outgoingCount = count;
+                outgoingBytes = bytes;
+            }
         }
 
         private QueueCapacityExceededException CapacityException()

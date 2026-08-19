@@ -18,12 +18,13 @@ namespace ServiceMq
         private readonly IMessageStore store;
         private readonly StorageOptions options;
         private readonly TimeSpan? visibilityTimeout;
+        private readonly object enqueueLock = new object();
+        private readonly MonotonicQueueKeyGenerator keyGenerator;
         private readonly object leaseLock = new object();
         private readonly Dictionary<Guid, Lease> leases = new Dictionary<Guid, Lease>();
         private readonly ManualResetEvent incomingSignal = new ManualResetEvent(false);
         private readonly Timer leaseTimer;
         private volatile bool continueProcessing = true;
-        private long sequence;
         private Exception stateException;
         private QueueState state = QueueState.Running;
 
@@ -33,8 +34,11 @@ namespace ServiceMq
             this.store = store;
             this.options = options;
             this.visibilityTimeout = visibilityTimeout;
+            var existingKeys = store.GetKeys(StorageArea.Incoming);
+            keyGenerator = new MonotonicQueueKeyGenerator(existingKeys);
             queue = new CachingQueue<Message>(store, StorageArea.Incoming, ".imq", Message.Deserialize,
-                x => x.ToString(), maxMessagesInMemory, reorderLevel, options.Durability);
+                x => x.ToString(), maxMessagesInMemory, reorderLevel, options.Durability, true,
+                RequiresExistenceValidation(options), existingKeys);
             if (queue.Count > 0) incomingSignal.Set();
             if (visibilityTimeout.HasValue)
                 leaseTimer = new Timer(RequeueExpiredLeases, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
@@ -64,9 +68,12 @@ namespace ServiceMq
         {
             try
             {
-                var key = NewKey(".imq");
-                message.Filename = key;
-                queue.Enqueue(key, message);
+                lock (enqueueLock)
+                {
+                    var key = keyGenerator.Next(".imq");
+                    message.Filename = key;
+                    queue.Enqueue(key, message);
+                }
                 if (continueProcessing) incomingSignal.Set();
             }
             catch (Exception ex)
@@ -172,13 +179,6 @@ namespace ServiceMq
             catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
         }
 
-        private string NewKey(string suffix)
-        {
-            return DateTime.UtcNow.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture) + "-" +
-                Interlocked.Increment(ref sequence).ToString("D10", CultureInfo.InvariantCulture) + "-" +
-                Guid.NewGuid().ToString("N") + suffix;
-        }
-
         private static string AuditKey(string prefix)
         {
             return prefix + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HH-mm", CultureInfo.InvariantCulture) + ".log";
@@ -191,6 +191,12 @@ namespace ServiceMq
             return string.Join("\t", "meta", message.Id, message.From, message.Sent.ToString("o", CultureInfo.InvariantCulture),
                 message.Received.ToString("o", CultureInfo.InvariantCulture), message.SendAttempt, message.MessageTypeName,
                 message.MessageBytes == null ? (message.MessageString ?? string.Empty).Length : message.MessageBytes.Length);
+        }
+
+        private static bool RequiresExistenceValidation(StorageOptions options)
+        {
+            return options.FullBehavior == QueueFullBehavior.DropOldest &&
+                (options.MaxBytes.HasValue || options.MaxMessages.HasValue);
         }
     }
 }

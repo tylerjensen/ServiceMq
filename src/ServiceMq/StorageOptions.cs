@@ -57,6 +57,7 @@ namespace ServiceMq
 
     public sealed class DeliveryOptions
     {
+        public int MaxConcurrentDestinations { get; set; } = 4;
         public int MaxAttempts { get; set; } = int.MaxValue;
         public TimeSpan MaxAge { get; set; } = TimeSpan.FromHours(24);
         public TimeSpan InitialRetryDelay { get; set; } = TimeSpan.FromSeconds(1);

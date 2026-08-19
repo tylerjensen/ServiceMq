@@ -24,6 +24,7 @@ namespace ServiceMq
         private readonly StorageArea area;
         private readonly DurabilityMode durability;
         private readonly string suffix;
+        private readonly Action<string> recordDiscarded;
         private int reloading;
         private Exception reloadException;
 
@@ -33,7 +34,8 @@ namespace ServiceMq
         public CachingQueue(IMessageStore store, StorageArea area, string suffix,
             Func<string, string, T> deserialize, Func<T, string> serialize,
             int maxMessagesInMemory, int reorderLevel, DurabilityMode durability, bool persistMessages = true,
-            bool validateExistence = true)
+            bool validateExistence = true, IEnumerable<string> initialKeys = null,
+            Action<string> recordDiscarded = null)
         {
             this.store = store;
             this.area = area;
@@ -46,16 +48,19 @@ namespace ServiceMq
             this.durability = durability;
             this.persistMessages = persistMessages;
             this.validateExistence = validateExistence;
+            this.recordDiscarded = recordDiscarded;
             keysQueue = new Queue<string>(this.maxMessagesInMemory);
             messageQueue = new Queue<QueueEntry>(this.maxMessagesInMemory);
-            if (persistMessages) Initialize();
+            if (persistMessages) Initialize(initialKeys);
         }
 
-        private void Initialize()
+        private void Initialize(IEnumerable<string> initialKeys)
         {
             lock (syncRoot)
             {
-                foreach (var key in store.GetKeys(area).Where(x => x.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)))
+                foreach (var key in (initialKeys ?? store.GetKeys(area))
+                    .Where(x => x.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(x => x, StringComparer.Ordinal))
                 {
                     if (messageQueue.Count < maxMessagesInMemory) LoadIntoMemory(key);
                     else keysQueue.Enqueue(key);
@@ -65,13 +70,26 @@ namespace ServiceMq
 
         public T Dequeue()
         {
+            return Dequeue(validateExistence);
+        }
+
+        public T DequeueWithoutValidation()
+        {
+            return Dequeue(false);
+        }
+
+        private T Dequeue(bool checkExistence)
+        {
             lock (syncRoot)
             {
+                EnsureMessageAvailable();
                 while (messageQueue.Count > 0)
                 {
                     var entry = messageQueue.Dequeue();
                     RefillCheck();
-                    if (!validateExistence || store.Contains(area, entry.Key)) return entry.Value;
+                    if (!checkExistence || store.Contains(area, entry.Key)) return entry.Value;
+                    if (recordDiscarded != null) recordDiscarded(entry.Key);
+                    EnsureMessageAvailable();
                 }
                 return default(T);
             }
@@ -82,10 +100,13 @@ namespace ServiceMq
             var result = new List<T>(maxMessagesToReceive);
             lock (syncRoot)
             {
+                EnsureMessageAvailable();
                 while (result.Count < maxMessagesToReceive && messageQueue.Count > 0)
                 {
                     var entry = messageQueue.Dequeue();
                     if (!validateExistence || store.Contains(area, entry.Key)) result.Add(entry.Value);
+                    else if (recordDiscarded != null) recordDiscarded(entry.Key);
+                    if (messageQueue.Count == 0) EnsureMessageAvailable();
                 }
                 RefillCheck();
             }
@@ -96,11 +117,14 @@ namespace ServiceMq
         {
             lock (syncRoot)
             {
+                EnsureMessageAvailable();
                 while (messageQueue.Count > 0)
                 {
                     var entry = messageQueue.Peek();
                     if (!validateExistence || store.Contains(area, entry.Key)) return entry.Value;
                     messageQueue.Dequeue();
+                    if (recordDiscarded != null) recordDiscarded(entry.Key);
+                    EnsureMessageAvailable();
                 }
                 return default(T);
             }
@@ -131,7 +155,8 @@ namespace ServiceMq
 
         private void RefillCheck()
         {
-            if (keysQueue.Count > 0 && messageQueue.Count < reorderLevel) RefillMessageQueueAsync();
+            if (maxMessagesInMemory > 1 && keysQueue.Count > 0 && messageQueue.Count < reorderLevel)
+                RefillMessageQueueAsync();
         }
 
         private void RefillMessageQueueAsync()
@@ -153,18 +178,31 @@ namespace ServiceMq
                             }
                             if (keysQueue.Count == 0 || messageQueue.Count >= maxMessagesInMemory) break;
                         }
-                        Thread.Sleep(1);
                     }
                 }
                 catch (Exception ex) { reloadException = ex; }
                 finally { Interlocked.Exchange(ref reloading, 0); }
-            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            }, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+        }
+
+        private void EnsureMessageAvailable()
+        {
+            // Do not report an empty queue merely because the asynchronous prefetch has
+            // not run yet. Loading one record here keeps dequeue FIFO and prevents a
+            // consumer from resetting its signal while durable records still exist.
+            while (messageQueue.Count == 0 && keysQueue.Count > 0)
+                LoadIntoMemory(keysQueue.Dequeue());
         }
 
         private void LoadIntoMemory(string key)
         {
             try
             {
+                if (validateExistence && !store.Contains(area, key))
+                {
+                    if (recordDiscarded != null) recordDiscarded(key);
+                    return;
+                }
                 var value = deserialize(key, store.Read(area, key).Value);
                 if (object.Equals(value, default(T))) throw new FormatException("The stored message is empty or invalid.");
                 messageQueue.Enqueue(new QueueEntry { Key = key, Value = value });
@@ -173,6 +211,7 @@ namespace ServiceMq
             {
                 reloadException = ex;
                 try { store.Move(area, StorageArea.Corrupt, key); } catch { }
+                if (recordDiscarded != null) recordDiscarded(key);
             }
         }
     }

@@ -22,6 +22,7 @@ namespace ServiceMq
         private readonly TcpHost tcpHost;
         private readonly StorageOptions storageOptions;
         private readonly Timer cleanupTimer;
+        private readonly object sendLock = new object();
         private readonly JsonSerializerSettings serializerSettings = new JsonSerializerSettings
         {
             ReferenceLoopHandling = ReferenceLoopHandling.Ignore
@@ -214,48 +215,60 @@ namespace ServiceMq
 
         private Guid SendMsg(string value, string messageType, Address destination)
         {
-            ThrowIfOutboundFailed();
-            var message = NewOutbound(destination, messageType);
-            message.MessageString = value;
-            outboundQueue.Enqueue(message);
-            return message.Id;
+            lock (sendLock)
+            {
+                ThrowIfOutboundFailed();
+                var message = NewOutbound(destination, messageType);
+                message.MessageString = value;
+                outboundQueue.Enqueue(message);
+                return message.Id;
+            }
         }
 
         private Guid SendMsg(byte[] value, string messageType, Address destination)
         {
-            ThrowIfOutboundFailed();
-            var message = NewOutbound(destination, messageType);
-            message.MessageBytes = value;
-            outboundQueue.Enqueue(message);
-            return message.Id;
+            lock (sendLock)
+            {
+                ThrowIfOutboundFailed();
+                var message = NewOutbound(destination, messageType);
+                message.MessageBytes = value;
+                outboundQueue.Enqueue(message);
+                return message.Id;
+            }
         }
 
         private Guid BroadcastMsg(string value, string messageType, IEnumerable<Address> destinations)
         {
-            ThrowIfOutboundFailed();
-            var id = Guid.NewGuid();
-            var sent = DateTime.UtcNow;
-            foreach (var destination in destinations)
+            lock (sendLock)
             {
-                var message = NewOutbound(destination, messageType, id, sent);
-                message.MessageString = value;
-                outboundQueue.Enqueue(message);
+                ThrowIfOutboundFailed();
+                var id = Guid.NewGuid();
+                var sent = DateTime.UtcNow;
+                foreach (var destination in destinations)
+                {
+                    var message = NewOutbound(destination, messageType, id, sent);
+                    message.MessageString = value;
+                    outboundQueue.Enqueue(message);
+                }
+                return id;
             }
-            return id;
         }
 
         private Guid BroadcastMsg(byte[] value, string messageType, IEnumerable<Address> destinations)
         {
-            ThrowIfOutboundFailed();
-            var id = Guid.NewGuid();
-            var sent = DateTime.UtcNow;
-            foreach (var destination in destinations)
+            lock (sendLock)
             {
-                var message = NewOutbound(destination, messageType, id, sent);
-                message.MessageBytes = value;
-                outboundQueue.Enqueue(message);
+                ThrowIfOutboundFailed();
+                var id = Guid.NewGuid();
+                var sent = DateTime.UtcNow;
+                foreach (var destination in destinations)
+                {
+                    var message = NewOutbound(destination, messageType, id, sent);
+                    message.MessageBytes = value;
+                    outboundQueue.Enqueue(message);
+                }
+                return id;
             }
-            return id;
         }
 
         private OutboundMessage NewOutbound(Address destination, string messageType, Guid? id = null, DateTime? sent = null)
@@ -360,6 +373,8 @@ namespace ServiceMq
             if (options.ReorderLevel < 1 || options.ReorderLevel > options.MaxMessagesInMemory)
                 throw new ArgumentOutOfRangeException("options.ReorderLevel");
             if (options.Delivery.MaxAttempts < 1) throw new ArgumentOutOfRangeException("options.Delivery.MaxAttempts");
+            if (options.Delivery.MaxConcurrentDestinations < 1)
+                throw new ArgumentOutOfRangeException("options.Delivery.MaxConcurrentDestinations");
             if (options.Delivery.MaxAge <= TimeSpan.Zero) throw new ArgumentOutOfRangeException("options.Delivery.MaxAge");
         }
 

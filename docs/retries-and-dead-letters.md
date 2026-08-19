@@ -13,6 +13,7 @@ record after success or moves it to the dead-letter area.
 ```csharp
 Delivery = new DeliveryOptions
 {
+    MaxConcurrentDestinations = 8,
     MaxAttempts = 100,
     MaxAge = TimeSpan.FromHours(24),
     InitialRetryDelay = TimeSpan.FromSeconds(1),
@@ -31,6 +32,11 @@ min(MaximumRetryDelay,
 The default attempt limit is effectively unlimited, while the default maximum age is
 24 hours. A message enters the dead-letter store when either limit is reached.
 
+`MaxConcurrentDestinations` bounds the number of destination deliveries that may be
+in progress at once (default `4`). Each destination remains strictly serial, so a slow
+or unavailable endpoint does not block ready messages for other destinations while a
+worker slot is available.
+
 Attempt count and last-attempt time are stored in version 7 outgoing records, so a
 process restart does not reset the retry policy.
 
@@ -38,9 +44,15 @@ process restart does not reset the retry policy.
 
 ## Ordering while a destination is down
 
+Messages sent by one `MessageQueue` are delivered FIFO per destination. Each send is
+assigned a monotonic durable queue position before `Send` returns. Concurrent sends
+are ordered when they enter that queue. Stored positions are loaded in ordinal order
+after restart, even when a custom storage provider returns keys in another order.
+
 When one message fails, later messages for the same destination join its retry queue.
-ServiceMq does not intentionally skip ahead for that destination. Different
-destinations can make progress independently.
+ServiceMq does not skip ahead for that destination. The head message must be delivered
+or dead-lettered before the next message can be delivered. Different destinations can
+make progress independently.
 
 This ordering applies within one `MessageQueue` instance and its durable store. It is
 not distributed ordering across several sender processes.
