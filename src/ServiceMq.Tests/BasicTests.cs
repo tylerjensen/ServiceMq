@@ -7,7 +7,7 @@ namespace ServiceMq.Tests
 {
     public class BasicTests
     {
-        private readonly string _testFilesRoot = @"c:\temp\basic";
+        private readonly string _testFilesRoot = Path.Combine(Path.GetTempPath(), "ServiceMq.Tests", "basic");
 
         [Fact] 
         public void SimpleTest()

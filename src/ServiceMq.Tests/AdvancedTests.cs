@@ -8,7 +8,7 @@ namespace ServiceMq.Tests
 {
     public class AdvancedTests
     {
-        private readonly string _testFilesRoot = @"c:\temp\advanced";
+        private readonly string _testFilesRoot = Path.Combine(Path.GetTempPath(), "ServiceMq.Tests", "advanced");
 
         [Fact]
         public void MultiLineTest()

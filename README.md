@@ -3,6 +3,14 @@ ServiceMq
 
 Easy store and forward message queue library for .NET.
 
+### Changes in version 7.0.0
+
+1. Updated the library targets to .NET Standard 2.0 and .NET 8.0.
+
+2. Updated to ServiceWire 7.0.0.
+
+3. Declared the Newtonsoft.Json dependency directly because ServiceWire no longer provides it transitively.
+
 ### Breaking Changes in version 5.1.0
 
 1. Updated to NetCoreApp 2.0 and 2.2 and .NET Framework 4.62 
