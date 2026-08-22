@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <Authors>MPCoreDeveloper</Authors>
+    <Version>7.0.0</Version>
+    <Description>SharpCoreDB storage provider for ServiceMq.</Description>
+    <PackageTags>Message Queue Messaging Store Forward SharpCoreDB</PackageTags>
+    <PackageProjectUrl>https://github.com/tylerjensen/ServiceMq</PackageProjectUrl>
+    <PackageLicenseFile>License.txt</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      SharpCoreDB is only available for net10.0 (NuGet 1.9.3). Pin the concrete version here:
+      a library that is packed cannot use floating versions like "1.*" because the generated
+      .nuspec must reference a fixed version. Update this version manually when a new release ships.
+    -->
+    <PackageReference Include="SharpCoreDB" Version="1.9.3" />
+    <ProjectReference Include="..\ServiceMq\ServiceMq.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\License.txt" Pack="true" PackagePath="" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="" />
+    <None Include="..\..\docs\**\*" Pack="true" PackagePath="docs\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>
