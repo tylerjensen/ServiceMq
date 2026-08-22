@@ -56,7 +56,7 @@ If `Durability` is `MemoryOnly` and no provider is supplied, ServiceMq creates a
 ### SQLite provider
 
 ```shell
-dotnet add package ServiceMq.Sqlite --version 7.0.0
+dotnet add package ServiceMq.Sqlite --version 7.1.0
 ```
 
 ```csharp
@@ -71,6 +71,28 @@ SQLite lives in its own package so applications using file or memory storage do 
 receive SQLite native dependencies. It uses WAL mode with `synchronous=FULL`; durable
 transactions are committed to the WAL without forcing a checkpoint after every
 message. `FlushStorage()` and orderly disposal perform an explicit full checkpoint.
+
+### SharpCoreDB provider
+
+```shell
+dotnet add package ServiceMq.SharpCoreDb --version 7.1.0
+```
+
+```csharp
+Storage = new StorageOptions
+{
+    Provider = new SharpCoreDbMessageStore(@"D:\queues\orders", masterPassword),
+    Durability = DurabilityMode.FlushToDisk
+}
+```
+
+SharpCoreDB is an optional provider that targets `net10.0` only, because the SharpCoreDB
+package does. It is one storage choice among several, not a replacement for the file or
+SQLite stores. Payloads are sealed with AES-256-GCM under a key derived from the required
+master password (no default), and a store directory is owned by one instance at a time.
+See the package README (`docs/sharpcoredb-provider.md` inside the nupkg, or
+`src/ServiceMq.SharpCoreDb/README.md` in the repository) for the format, the ownership
+rules, and benchmarks against SQLite.
 
 ### Custom provider
 

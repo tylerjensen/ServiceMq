@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="../License.txt" />
+    <File Path="../README.md" />
+  </Folder>
+  <Project Path="ServiceMq/ServiceMq.csproj" />
+  <Project Path="ServiceMq.Sqlite/ServiceMq.Sqlite.csproj" />
+  <Project Path="ServiceMq.SharpCoreDb/ServiceMq.SharpCoreDb.csproj" />
+  <Project Path="ServiceMq.Tests/ServiceMq.Tests.csproj" />
+  <Project Path="ServiceMq.Tests.SharpCoreDb/ServiceMq.Tests.SharpCoreDb.csproj" />
+  <Project Path="ServiceMq.Benchmarks/ServiceMq.Benchmarks.csproj" />
+</Solution>

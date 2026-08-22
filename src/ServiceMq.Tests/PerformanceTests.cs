@@ -80,13 +80,13 @@ namespace ServiceMq.Tests
             {
                 sender.Send(receiverAddress, 1);
                 var secondSend = Task.Run(() => sender.Send(receiverAddress, 2));
-                await Task.Delay(100);
+                await Task.Delay(100, TestContext.Current.CancellationToken);
                 Assert.False(secondSend.IsCompleted);
 
                 using (var receiver = new MessageQueue(MemoryOptions("block-receiver", receiverAddress)))
                 {
                     Assert.Equal(1, receiver.Receive(3000).To<int>());
-                    var completed = await Task.WhenAny(secondSend, Task.Delay(3000));
+                    var completed = await Task.WhenAny(secondSend, Task.Delay(3000, TestContext.Current.CancellationToken));
                     Assert.Same(secondSend, completed);
                     await secondSend;
                     Assert.Equal(2, receiver.Receive(3000).To<int>());
@@ -110,7 +110,7 @@ namespace ServiceMq.Tests
             using (var sender = new MessageQueue(options))
             {
                 sender.Send(slowAddress, "slow");
-                Assert.True(slowStore.WriteStarted.Wait(3000));
+                Assert.True(slowStore.WriteStarted.Wait(3000, TestContext.Current.CancellationToken));
                 try
                 {
                     var stopwatch = Stopwatch.StartNew();
@@ -150,7 +150,7 @@ namespace ServiceMq.Tests
             using (var sender = new MessageQueue(options))
             {
                 sender.Send(slowAddress, "slow");
-                Assert.True(slowStore.WriteStarted.Wait(3000));
+                Assert.True(slowStore.WriteStarted.Wait(3000, TestContext.Current.CancellationToken));
                 sender.Send(fastAddress, "fast");
                 Assert.Null(fast.Receive(100));
 

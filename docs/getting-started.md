@@ -12,7 +12,7 @@ when each queue lives in a different process.
 ```shell
 dotnet new console -n QueueDemo
 cd QueueDemo
-dotnet add package ServiceMq --version 7.0.0
+dotnet add package ServiceMq --version 7.1.0
 ```
 
 ServiceMq uses ServiceWire internally; the application does not need to add a separate

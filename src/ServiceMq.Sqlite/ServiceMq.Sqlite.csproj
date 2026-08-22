@@ -4,16 +4,17 @@
     <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <Authors>Tyler Jensen</Authors>
-    <Version>7.0.0</Version>
+    <Version>7.1.0</Version>
     <Description>SQLite storage provider for ServiceMq.</Description>
     <PackageTags>Message Queue Messaging Store Forward SQLite</PackageTags>
     <PackageProjectUrl>https://github.com/tylerjensen/ServiceMq</PackageProjectUrl>
     <PackageLicenseFile>License.txt</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Updates Microsoft.Data.Sqlite to 10.0.11, which clears the SQLitePCLRaw.lib.e_sqlite3 advisory GHSA-2m69-gcr7-jv3q carried by the 8.0.x line. Still targets netstandard2.0 and net8.0; no API changes.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.29" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <ProjectReference Include="..\ServiceMq\ServiceMq.csproj" />
   </ItemGroup>
 

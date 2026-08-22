@@ -4,12 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <Authors>MPCoreDeveloper</Authors>
-    <Version>7.0.0</Version>
+    <Version>7.1.0</Version>
     <Description>SharpCoreDB storage provider for ServiceMq.</Description>
     <PackageTags>Message Queue Messaging Store Forward SharpCoreDB</PackageTags>
     <PackageProjectUrl>https://github.com/tylerjensen/ServiceMq</PackageProjectUrl>
     <PackageLicenseFile>License.txt</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>First published release (net10.0 only; SharpCoreDB 1.9.3). A master password is required and has no default. Payloads are sealed with AES-256-GCM under a PBKDF2-HMAC-SHA256 key derived from the password and a per-store salt recorded in servicemq-store.json (store format v1); the row key is authenticated as associated data. The store directory is owned exclusively by one instance via servicemq.lock. GetKeys returns ordinal order; Move flushes the destination before removing the source.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,9 +24,21 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets the test project reach the IQueueTable seam for fault injection. -->
+    <InternalsVisibleTo Include="ServiceMq.Tests.SharpCoreDb" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="..\..\License.txt" Pack="true" PackagePath="" />
     <None Include="..\..\README.md" Pack="true" PackagePath="" />
     <None Include="..\..\docs\**\*" Pack="true" PackagePath="docs\%(RecursiveDir)%(Filename)%(Extension)" />
+    <!--
+      The shared root README.md is the readme nuget.org displays, matching ServiceMq.Sqlite.
+      This provider's own README ships next to the shared docs. Use Update rather than Include:
+      the SDK default None glob already picks up README.md from the project directory, so a
+      second Include would be a duplicate item.
+    -->
+    <None Update="README.md" Pack="true" PackagePath="docs\sharpcoredb-provider.md" />
   </ItemGroup>
 
 </Project>

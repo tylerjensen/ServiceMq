@@ -28,16 +28,17 @@ explicit acknowledgment.
 ## Install
 
 ```shell
-dotnet add package ServiceMq --version 7.0.0
+dotnet add package ServiceMq --version 7.1.0
 ```
 
-Install the optional provider only when SQLite is wanted:
+Install an optional provider only when that store is wanted:
 
 ```shell
-dotnet add package ServiceMq.Sqlite --version 7.0.0
+dotnet add package ServiceMq.Sqlite --version 7.1.0
+dotnet add package ServiceMq.SharpCoreDb --version 7.1.0   # requires .NET 10
 ```
 
-Both packages target `netstandard2.0` and `net8.0`. The core package depends on
+ServiceMq and ServiceMq.Sqlite target `netstandard2.0` and `net8.0`; ServiceMq.SharpCoreDb targets `net10.0` only. The core package depends on
 ServiceWire 7.0 and does not pull in SQLite or native SQLite libraries.
 
 ---

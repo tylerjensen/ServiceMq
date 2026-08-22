@@ -17,13 +17,13 @@ ServiceMq 7 moves to ServiceWire 7, targets modern .NET, and introduces configur
 Upgrade the package references together:
 
 ```xml
-<PackageReference Include="ServiceMq" Version="7.0.0" />
+<PackageReference Include="ServiceMq" Version="7.1.0" />
 ```
 
 Add the companion package only when the application uses SQLite:
 
 ```xml
-<PackageReference Include="ServiceMq.Sqlite" Version="7.0.0" />
+<PackageReference Include="ServiceMq.Sqlite" Version="7.1.0" />
 ```
 
 ## Existing code can start unchanged

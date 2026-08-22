@@ -7,23 +7,24 @@ namespace ServiceMq.Tests.SharpCoreDb
 {
     public class SharpCoreDbStorageTests
     {
+        internal const string Password = "servicemq-test-master-password";
+
         [Fact]
         public void SharpCoreDbStore_PersistsAcrossInstances()
         {
-            var root = Path.Combine(Path.GetTempPath(), "ServiceMq.SharpCoreDb.Tests", Guid.NewGuid().ToString("N"));
+            var root = NewRoot();
             try
             {
-                using (var store = new SharpCoreDbMessageStore(root))
+                using (var store = new SharpCoreDbMessageStore(root, Password))
                 {
                     store.Write(StorageArea.Outgoing, "one.omq", "payload", DurabilityMode.FlushToDisk);
                     Assert.True(store.Contains(StorageArea.Outgoing, "one.omq"));
                     Assert.Equal("payload", store.Read(StorageArea.Outgoing, "one.omq").Value);
                 }
 
-                // Reopen the same database directory — SharpCoreDB directory mode is encrypted
-                // with AES-256-GCM derived from the default master password, so the default
-                // password must be reused (or an explicit one).
-                using (var store = new SharpCoreDbMessageStore(root))
+                // Reopening rebuilds the per-area key index from disk and re-derives the
+                // payload key from the same password plus the persisted salt.
+                using (var store = new SharpCoreDbMessageStore(root, Password))
                 {
                     Assert.Equal("payload", store.Read(StorageArea.Outgoing, "one.omq").Value);
                     store.Move(StorageArea.Outgoing, StorageArea.DeadLetter, "one.omq");
@@ -42,19 +43,18 @@ namespace ServiceMq.Tests.SharpCoreDb
         [Fact]
         public void SharpCoreDbStore_AppendAndWriteOverwrite()
         {
-            var root = Path.Combine(Path.GetTempPath(), "ServiceMq.SharpCoreDb.Tests", Guid.NewGuid().ToString("N"));
+            var root = NewRoot();
             try
             {
-                using (var store = new SharpCoreDbMessageStore(root))
-                {
-                    store.Append(StorageArea.Incoming, "one.imq", "first", DurabilityMode.FlushToDisk);
-                    store.Append(StorageArea.Incoming, "one.imq", "second", DurabilityMode.FlushToDisk);
-                    var entry = store.Read(StorageArea.Incoming, "one.imq");
-                    Assert.Equal("first" + Environment.NewLine + "second", entry.Value);
+                using var store = new SharpCoreDbMessageStore(root, Password);
+                store.Append(StorageArea.Incoming, "one.imq", "first", DurabilityMode.FlushToDisk);
+                store.Append(StorageArea.Incoming, "one.imq", "second", DurabilityMode.FlushToDisk);
+                var entry = store.Read(StorageArea.Incoming, "one.imq");
+                Assert.Equal("first" + Environment.NewLine + "second", entry.Value);
+                Assert.Equal(Encoding.UTF8.GetByteCount(entry.Value), entry.Length);
 
-                    store.Write(StorageArea.Incoming, "one.imq", "third", DurabilityMode.FlushToDisk);
-                    Assert.Equal("third", store.Read(StorageArea.Incoming, "one.imq").Value);
-                }
+                store.Write(StorageArea.Incoming, "one.imq", "third", DurabilityMode.FlushToDisk);
+                Assert.Equal("third", store.Read(StorageArea.Incoming, "one.imq").Value);
             }
             finally
             {
@@ -78,7 +78,7 @@ namespace ServiceMq.Tests.SharpCoreDb
                     Storage = new StorageOptions
                     {
                         Durability = DurabilityMode.FlushToDisk,
-                        Provider = new SharpCoreDbMessageStore(Path.Combine(root, "receiver"))
+                        Provider = new SharpCoreDbMessageStore(Path.Combine(root, "receiver"), Password)
                     }
                 };
                 using (var receiver = new MessageQueue(receiverOptions))
@@ -89,7 +89,7 @@ namespace ServiceMq.Tests.SharpCoreDb
                     Storage = new StorageOptions
                     {
                         Durability = DurabilityMode.FlushToDisk,
-                        Provider = new SharpCoreDbMessageStore(Path.Combine(root, "sender"))
+                        Provider = new SharpCoreDbMessageStore(Path.Combine(root, "sender"), Password)
                     }
                 }))
                 {
@@ -110,24 +110,19 @@ namespace ServiceMq.Tests.SharpCoreDb
         [Fact]
         public void SharpCoreDbStore_PayloadIsEncryptedAtRest()
         {
-            var root = Path.Combine(Path.GetTempPath(), "ServiceMq.SharpCoreDb.Tests", Guid.NewGuid().ToString("N"));
+            var root = NewRoot();
             const string secret = "super-secret-queue-payload";
             try
             {
-                using (var store = new SharpCoreDbMessageStore(root))
+                using (var store = new SharpCoreDbMessageStore(root, Password))
                 {
                     store.Write(StorageArea.Outgoing, "secret.omq", secret, DurabilityMode.FlushToDisk);
                 }
 
-                // SharpCoreDB stores payloads encrypted with AES-256-GCM (master password
-                // derived). The plaintext value must not appear anywhere inside the database.
                 Assert.False(ContainsText(root, secret),
                     "Encrypted storage must not contain the plaintext payload.");
-                Assert.False(ContainsText(root, Encoding.UTF8.GetBytes(secret)),
-                    "Encrypted storage must not contain the plaintext payload bytes.");
 
-                // And reopening with the default password still reads it back.
-                using (var store = new SharpCoreDbMessageStore(root))
+                using (var store = new SharpCoreDbMessageStore(root, Password))
                 {
                     Assert.Equal(secret, store.Read(StorageArea.Outgoing, "secret.omq").Value);
                 }
@@ -138,7 +133,10 @@ namespace ServiceMq.Tests.SharpCoreDb
             }
         }
 
-        private static void Cleanup(string path)
+        internal static string NewRoot() =>
+            Path.Combine(Path.GetTempPath(), "ServiceMq.SharpCoreDb.Tests", Guid.NewGuid().ToString("N"));
+
+        internal static void Cleanup(string path)
         {
             try
             {
@@ -147,12 +145,12 @@ namespace ServiceMq.Tests.SharpCoreDb
             catch { /* best-effort cleanup */ }
         }
 
-        private static bool ContainsText(string directory, string text)
+        internal static bool ContainsText(string directory, string text)
         {
             return ContainsText(directory, Encoding.UTF8.GetBytes(text));
         }
 
-        private static bool ContainsText(string directory, byte[] bytes)
+        internal static bool ContainsText(string directory, byte[] bytes)
         {
             if (!Directory.Exists(directory)) return false;
             foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
