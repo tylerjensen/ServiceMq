@@ -52,6 +52,43 @@ The upgrade is **fully backwards compatible**:
   tombstone markers), so back up before rolling back a deployment.
 - The package still targets `net10.0` only and still requires a master password.
 
+### Engine mode used for new stores
+
+SharpCoreDB 2.x exposes several storage modes (fixed-width columnar default, legacy
+variable-length, page-based, plus `DatabaseConfig` presets). This provider drives the engine
+with single-row point inserts/updates/deletes through the direct `ITable` API, so the modes
+were measured on that workload (same machine/environment as the benchmark below). Findings:
+
+- The 2.x **fixed-width columnar default is slower than 1.9.3 for this access pattern**
+  (~600 vs ~1,900 buffered writes/sec; ~300 vs ~2,300 purge rows/sec on the reference machine).
+- The **legacy variable-length record layout** (`AutoFixedWidthRecords = false`) keeps the
+  record format this provider was written for and is the fastest *correct* mode: buffered
+  writes ~2,300/sec, purge ~1,100 rows/sec, reads ~150K/sec — back at or above the 1.9.3
+  numbers while running on the hardened 2.0 engine.
+- The **page-based** engine measured even faster in a single session (buffered writes
+  ~200K/sec, reads ~750K/sec) but its primary-key index is not rebuilt on reopen —
+  `ITable.FindByPrimaryKey` returns `null` after a restart while a full scan still sees the
+  rows — so the provider does not use it as the default.
+
+Brand-new store directories therefore default to the legacy variable-length layout. The choice
+is recorded in the store manifest (`"engine": "fast"`) and every reopen reuses the recorded
+layout, so stores survive restarts. Existing stores created by 7.1.0 / SharpCoreDB 1.9.3 have
+no marker and keep the exact behaviour they had before. The mode is **configurable**: pass an
+explicit `DatabaseConfig` to any constructor to override it (new and existing stores alike):
+
+```csharp
+// The engine's own 2.x default (fixed-width columnar) for newly created tables.
+var store = new SharpCoreDbMessageStore(path, masterPassword, new DatabaseConfig());
+
+// Explicit page-based engine (fast in-session; see the reopen caveat above).
+var pageStore = new SharpCoreDbMessageStore(path, masterPassword,
+    new DatabaseConfig { StorageEngineType = StorageEngineType.PageBased });
+```
+
+> If you supply a custom `DatabaseConfig` that changes the storage mode, pass the **same
+> config when reopening** that store: SharpCoreDB's engine selection is config-driven at open,
+> and a mismatched reopen can silently read an empty table.
+
 ## Usage
 
 ```csharp
@@ -75,7 +112,7 @@ The master password is required and has no default. It opens the SharpCoreDB dat
 
 | File | Purpose |
 |---|---|
-| `servicemq-store.json` | Store manifest: format version, key-derivation parameters, the per-store salt, and the active table generation. **Losing it loses every payload** — back it up with the data. |
+| `servicemq-store.json` | Store manifest: format version, key-derivation parameters, the per-store salt, the active table generation, and (for stores created from 7.1.1 on the fast default) the engine-mode marker. **Losing it loses every payload** — back it up with the data. |
 | `servicemq.lock` | Ownership lock, held open for the life of the store. |
 | `queue_items*.dat`, `meta.dat`, `.salt` | SharpCoreDB's own files. |
 

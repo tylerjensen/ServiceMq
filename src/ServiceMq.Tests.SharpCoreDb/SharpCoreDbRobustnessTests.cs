@@ -67,6 +67,27 @@ namespace ServiceMq.Tests.SharpCoreDb
         }
 
         [Fact]
+        public void Manifest_RecordsFastEngineMarker_ForNewDefaultStore()
+        {
+            var root = SharpCoreDbStorageTests.NewRoot();
+            try
+            {
+                using (var store = Open(root))
+                    store.Write(StorageArea.Outgoing, "a.omq", "payload", DurabilityMode.FlushToDisk);
+
+                // The default new-store engine mode (legacy variable-length records) must be
+                // recorded so reopening reuses the same mode instead of silently reading an
+                // empty table under a different engine.
+                var json = JsonNode.Parse(File.ReadAllText(Path.Combine(root, ManifestFile)))!;
+                Assert.Equal("fast", (string)json["engine"]!);
+
+                using var reopened = Open(root);
+                Assert.Equal("payload", reopened.Read(StorageArea.Outgoing, "a.omq").Value);
+            }
+            finally { SharpCoreDbStorageTests.Cleanup(root); }
+        }
+
+        [Fact]
         public void Manifest_TamperedSalt_FailsPayloadAuthentication()
         {
             var root = SharpCoreDbStorageTests.NewRoot();

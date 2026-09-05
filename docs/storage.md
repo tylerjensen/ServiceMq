@@ -94,7 +94,10 @@ master password (no default), and a store directory is owned by one instance at 
 Package 7.1.1 ships against the **SharpCoreDB 2.0.0.2** engine (the performance-first 2.x
 line). It is an in-place, backwards-compatible engine upgrade: existing stores created by
 7.1.0 / SharpCoreDB 1.9.3 open and run unchanged, the `ITable`-based API surface and store
-format (`v1`) are untouched, and no code changes are required.
+format (`v1`) are untouched, and no code changes are required. Brand-new store directories
+default to the fastest storage mode measured for this provider's workload (the legacy
+variable-length record layout) and record that choice in the store manifest; the storage mode
+is configurable per store through the `DatabaseConfig` constructor parameter.
 
 See the package README (`docs/sharpcoredb-provider.md` inside the nupkg, or
 `src/ServiceMq.SharpCoreDb/README.md` in the repository) for the format, the ownership

@@ -127,12 +127,45 @@ namespace ServiceMq
         /// </summary>
         internal int CompactionMinimumTombstones { get; set; } = 4096;
 
+        /// <summary>
+        /// Engine configuration used for <b>brand-new</b> store directories when the caller does
+        /// not pass a <see cref="DatabaseConfig"/>. On the measured ServiceMq workload the
+        /// fastest <em>correct</em> SharpCoreDB 2.0.0.2 mode is the legacy variable-length record
+        /// layout (<see cref="DatabaseConfig.AutoFixedWidthRecords"/> = <see langword="false"/>):
+        /// it keeps the 1.9.3-era record format this provider was written for and measures several
+        /// times faster than the fixed-width columnar default for the queue's single-row
+        /// insert/update/read/delete pattern, while still running on the hardened 2.0 engine.
+        /// (The PageBased engine measured even faster in one session but its primary-key index is
+        /// not rebuilt on reopen — <c>FindByPrimaryKey</c> returns null after a reopen — so it is
+        /// not used as the default.) Existing store directories keep whatever layout created them
+        /// (the engine persists the per-table record format), which preserves backwards
+        /// compatibility with stores written by 7.1.0 / SharpCoreDB 1.9.3. Callers can override
+        /// this for any store by passing an explicit <see cref="DatabaseConfig"/> (for example
+        /// <c>new DatabaseConfig()</c> for the engine's fixed-width default) to the constructor.
+        /// </summary>
+        private static DatabaseConfig DefaultNewStoreConfig() => new()
+        {
+            AutoFixedWidthRecords = false
+        };
+
+        /// <summary>Manifest marker for stores created on the fast new-store default.</summary>
+        private const string EngineMarkerFast = "fast";
+
         /// <param name="databasePath">Directory that holds the SharpCoreDB database.</param>
         /// <param name="masterPassword">
         /// Master password. It opens the SharpCoreDB database and, via PBKDF2, derives the
         /// payload encryption key. There is deliberately no default: a shipped constant would
         /// be public knowledge and the resulting encryption at rest would protect nothing.
         /// The same password must be supplied to reopen an existing store.
+        /// </param>
+        /// <param name="config">
+        /// Optional SharpCoreDB engine configuration. When <see langword="null"/>, a brand-new
+        /// store directory uses the provider's fast default (the legacy variable-length record
+        /// layout — see <see cref="DatabaseConfig.AutoFixedWidthRecords"/>) and an existing store
+        /// reopens with whatever layout created it (recorded in the store manifest). Pass an
+        /// explicit <see cref="DatabaseConfig"/> (for instance
+        /// <c>new DatabaseConfig { AutoFixedWidthRecords = true }</c>) to choose a different
+        /// engine mode; the value is applied to new and existing stores alike.
         /// </param>
         public SharpCoreDbMessageStore(string databasePath, string masterPassword)
             : this(databasePath, masterPassword, null, null)
@@ -175,10 +208,33 @@ namespace ServiceMq
                     .BuildServiceProvider();
 
                 var factory = new DatabaseFactory(provider);
+
+                // Engine mode: an explicit DatabaseConfig always wins. Otherwise the layout the
+                // store was created with must be reused on every open (SharpCoreDB's storage
+                // engine selection is driven by the config, so a mismatched reopen can silently
+                // read an empty table). A brand-new store directory gets the fast new-store
+                // default and records it in the manifest; a store whose manifest carries that
+                // marker reopens the same way; stores created by 7.1.0 / SharpCoreDB 1.9.3 (no
+                // marker) keep the neutral engine defaults so the persisted legacy layout decides.
+                string? engineMarker = null;
+                var effectiveConfig = config;
+                if (effectiveConfig == null)
+                {
+                    if (string.Equals(loaded?.Engine, EngineMarkerFast, StringComparison.Ordinal))
+                    {
+                        effectiveConfig = DefaultNewStoreConfig();
+                    }
+                    else if (loaded == null && IsNewStoreDirectory(DatabasePath))
+                    {
+                        effectiveConfig = DefaultNewStoreConfig();
+                        engineMarker = EngineMarkerFast;
+                    }
+                }
+
                 // Directory mode. EnableBatchEncryption MUST be true: SharpCoreDB append
                 // storage only encrypts table data files when this flag is set
                 // (Storage.Append.cs). Payloads are additionally sealed by this provider.
-                db = factory.Create(DatabasePath, masterPassword, false, WithBatchEncryption(config));
+                db = factory.Create(DatabasePath, masterPassword, false, WithBatchEncryption(effectiveConfig));
 
                 tableName = loaded?.Table ?? DefaultTableName;
                 DropLeftoverGenerations(db, DatabasePath, tableName);
@@ -187,7 +243,7 @@ namespace ServiceMq
                 // The index needs only keys and metadata, not the cipher, so it is built before
                 // the manifest decision: an unversioned directory is only rejected if it holds rows.
                 RebuildIndex();
-                manifest = ResolveManifest(DatabasePath, loaded, IndexedRowCount() + tombstones.Count);
+                manifest = ResolveManifest(DatabasePath, loaded, IndexedRowCount() + tombstones.Count, engineMarker);
 
                 var payloadKey = DerivePayloadKey(masterPassword, manifest);
                 cipher = new AesGcm(payloadKey, TagLength);
@@ -833,6 +889,15 @@ namespace ServiceMq
         }
 
         /// <summary>
+        /// Returns true when the directory has no SharpCoreDB database yet (no directory-mode
+        /// <c>meta.dat</c>) and no ServiceMq store manifest — i.e. this open is creating a brand
+        /// new store. The fast new-store engine default is applied only in that case.
+        /// </summary>
+        private static bool IsNewStoreDirectory(string databasePath) =>
+            !File.Exists(Path.Combine(databasePath, "meta.dat")) &&
+            !File.Exists(Path.Combine(databasePath, ManifestFileName));
+
+        /// <summary>
         /// Loads <c>servicemq-store.json</c> if present. Returns null when the directory has no
         /// manifest yet; the caller decides whether that means "new store" or "unsupported".
         /// </summary>
@@ -858,7 +923,7 @@ namespace ServiceMq
         /// pre-7.1.0 layout) and is rejected rather than silently re-keyed: every payload in it
         /// would fail authentication under a freshly generated salt.
         /// </summary>
-        private static StoreManifest ResolveManifest(string databasePath, StoreManifest? existing, long rowCount)
+        private static StoreManifest ResolveManifest(string databasePath, StoreManifest? existing, long rowCount, string? engineMarker)
         {
             var manifestPath = Path.Combine(databasePath, ManifestFileName);
             if (existing != null)
@@ -875,6 +940,10 @@ namespace ServiceMq
                     throw new InvalidDataException("The ServiceMq store manifest at " + manifestPath + " has an invalid iteration count.");
                 if (existing.DecodeSalt().Length != SaltLength)
                     throw new InvalidDataException("The ServiceMq store manifest at " + manifestPath + " has an invalid salt; expected " + SaltLength + " bytes.");
+                if (existing.Engine is not null && existing.Engine != EngineMarkerFast)
+                    throw new NotSupportedException(
+                        "The ServiceMq store at '" + databasePath + "' was created with engine '" + existing.Engine +
+                        "', which is not supported by this version of ServiceMq.SharpCoreDb.");
                 existing.Table ??= DefaultTableName;
                 return existing;
             }
@@ -892,7 +961,8 @@ namespace ServiceMq
                 Iterations = DefaultKeyDerivationIterations,
                 EnvelopeVersion = EnvelopeVersion,
                 Salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(SaltLength)),
-                Table = DefaultTableName
+                Table = DefaultTableName,
+                Engine = engineMarker
             };
             WriteManifest(databasePath, manifest);
             return manifest;
@@ -1019,6 +1089,15 @@ namespace ServiceMq
             public string Salt { get; set; } = string.Empty;
             /// <summary>Active table name; compaction advances it through generations.</summary>
             public string? Table { get; set; }
+
+            /// <summary>
+            /// Optional engine marker written for stores created by this package with the fast
+            /// new-store default (legacy variable-length records). Absent on stores created by
+            /// 7.1.0 / SharpCoreDB 1.9.3 or when the caller supplied an explicit
+            /// <see cref="DatabaseConfig"/>. Reopening must use the same configuration the store
+            /// was created with, so a null <see cref="DatabaseConfig"/> maps back through this field.
+            /// </summary>
+            public string? Engine { get; set; }
 
             public byte[] DecodeSalt()
             {
