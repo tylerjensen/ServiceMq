@@ -40,7 +40,7 @@ dotnet add package ServiceMq.Sqlite --version 7.1.0
 For SharpCoreDB storage (requires .NET 10):
 
 ```shell
-dotnet add package ServiceMq.SharpCoreDb --version 7.1.0
+dotnet add package ServiceMq.SharpCoreDb --version 7.1.1
 ```
 
 ServiceMq and ServiceMq.Sqlite target `netstandard2.0` and `net8.0`; ServiceMq.SharpCoreDb targets `net10.0` only. ServiceMq 7 uses ServiceWire 7.0.

@@ -35,7 +35,7 @@ Install an optional provider only when that store is wanted:
 
 ```shell
 dotnet add package ServiceMq.Sqlite --version 7.1.0
-dotnet add package ServiceMq.SharpCoreDb --version 7.1.0   # requires .NET 10
+dotnet add package ServiceMq.SharpCoreDb --version 7.1.1   # requires .NET 10
 ```
 
 ServiceMq and ServiceMq.Sqlite target `netstandard2.0` and `net8.0`; ServiceMq.SharpCoreDb targets `net10.0` only. The core package depends on

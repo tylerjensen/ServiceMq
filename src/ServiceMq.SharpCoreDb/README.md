@@ -4,7 +4,53 @@ A [SharpCoreDB](https://github.com/MPCoreDeveloper/SharpCoreDB) storage provider
 
 ServiceMq stores queue state behind `IMessageStore`, and ships several implementations: files (the default), memory, SQLite, and this one. They are interchangeable — pick whichever fits your deployment. This package exists so SharpCoreDB is available as a choice; it is not a recommended replacement for the SQLite or file providers.
 
-> **Requires .NET 10.0.** The SharpCoreDB NuGet package (currently `1.9.3`) targets `net10.0` (C# 14) only. Use `ServiceMq.Sqlite` or the built-in file store for `netstandard2.0` / `net8.0` consumers.
+> **Requires .NET 10.0.** The SharpCoreDB NuGet package (currently `2.0.0.2`) targets `net10.0` (C# 14) only. Use `ServiceMq.Sqlite` or the built-in file store for `netstandard2.0` / `net8.0` consumers.
+
+## Upgrade: SharpCoreDB 2.0.0.2 engine (package 7.1.1)
+
+`ServiceMq.SharpCoreDb` **7.1.1** moves the provider from the SharpCoreDB **1.9.3** engine to
+**2.0.0.2**, the **performance-first 2.x rewrite**. It is a drop-in, backwards-compatible engine
+swap — no code, store, or configuration changes are required — and it ships the engine's
+documented 2.x improvements with it:
+
+- **No per-operation debug I/O on the hot paths.** SharpCoreDB 2.0 removed the debug file
+  logging that 1.9.x performed on every SELECT, parameterized `ExecuteSQL`, batch transaction,
+  and INSERT — logging that forced extra disk I/O and throttled point reads, updates, deletes,
+  and inserts.
+- **Faster commit and overwrite writes.** Commit/overwrite writes are batched per storage page
+  (one write per touched page instead of one or two per row), and new primary-key tables default
+  to the fixed-width columnar record layout.
+- **Durable, cheaper deletes.** Row removals are recorded with commit-time tombstone markers
+  instead of a full-file rewrite, and legacy variable-length tables purge stale row versions on
+  delete so rows cannot resurrect after a reopen.
+- **Faster bulk paths and safer reopen.** Ascending-PK batches resolve in one sequential decode
+  pass, duplicate-key hash removal is no longer quadratic, and the reopen round-trip sweep fixed
+  three silent-data-loss edge cases (empty TEXT/BLOB values, single-file overflow arenas, legacy
+  delete resurrection).
+
+SharpCoreDB's own release notes report the engine-level numbers, e.g. the fair-PK harness in
+`docs/2.0.0.2_WHAT_CHANGED.md` measures the 2.x columnar path at ~106–172K deletes/sec,
+~125–152K inserts/sec, and ~72–110K reads/sec on the same machine where SQLite measures
+~353–420K / ~186–190K / ~95–107K — the v1.x benchmark gap is closed or beaten. **Those are
+SharpCoreDB engine numbers, not `IMessageStore` numbers.** This provider drives the engine
+through the same direct `ITable` API and keeps its own durable-write and payload-encryption
+conventions, so per-operation gains depend on workload; the `ServiceMq.Benchmarks` table below
+was measured on the 7.1.0 / 1.9.3 engine and is deliberately kept unchanged in this release so
+the provider's published measurements stay continuous.
+
+The upgrade is **fully backwards compatible**:
+
+- The `ITable` / `IDatabase` surface this provider uses and every `SharpCoreDbMessageStore`
+  constructor are unchanged — **no code changes and no reconfiguration are required** to take
+  the new engine.
+- Existing stores created by the 7.1.0 / SharpCoreDB 1.9.3 package **open and run
+  unmodified**: the store manifest format (`v1`), the AES-256-GCM payload envelopes, and the
+  provider's `area = -1` tombstone convention are all untouched, and the 2.x engine reads
+  legacy 1.9.x database files.
+- Downgrading a store that has been written under 2.0.0.2 back to a pre-2.0 engine is **not**
+  supported (the engine documents the same policy for databases that contain commit-time
+  tombstone markers), so back up before rolling back a deployment.
+- The package still targets `net10.0` only and still requires a master password.
 
 ## Usage
 
@@ -41,7 +87,7 @@ Format **v1** is the first shipped format (7.1.0). A directory that holds rows b
 
 ## Encryption
 
-SharpCoreDB 1.9.3 encrypts database metadata with the master password but writes table payloads to `*.dat` in the clear (`Storage.AppendBytes` ignores `EnableBatchEncryption` there). This provider therefore seals every payload itself:
+SharpCoreDB 2.0.0.2 (like the 1.9.x default) encrypts database metadata with the master password but leaves table payloads in `*.dat` in the clear unless the engine's opt-in per-record at-rest encryption flag is enabled. This provider therefore seals every payload itself:
 
 - **AES-256-GCM**, envelope `version(1) | nonce(12) | tag(16) | ciphertext`, Base64-encoded.
 - Key derived with **PBKDF2-HMAC-SHA256** (210,000 iterations; the count is recorded in the manifest so it can be raised for new stores later) over a random 16-byte per-store salt.
@@ -52,20 +98,22 @@ This is independent of `StorageOptions.Protector`. ServiceMq's `AesStorageProtec
 
 ## How deletes work (and why)
 
-SharpCoreDB's directory-mode storage is append-oriented: inserts and updates are written through to the table data file, and in the current release (`1.9.3`) row removals are applied to the in-memory table but are not yet recorded in that file. In our testing, a row removed with `ITable.DeleteByPrimaryKey`, `IDatabase.DeleteByPrimaryKey`, SQL `DELETE`, or `Table.Delete(where)` was present again after the database was reopened, whether or not `Flush()`, `ForceSave()`, or `VacuumAsync()` had been called in between. `Table.CompactStorage()` does rewrite the file, but its behaviour on a table that had been written to in the same session was not yet consistent enough in our runs for a message queue to rely on, so the provider does not call it.
+SharpCoreDB's directory-mode storage is append-oriented. Under SharpCoreDB 1.9.x, a row removed with `ITable.DeleteByPrimaryKey`, SQL `DELETE`, or `Table.Delete(where)` was applied to the in-memory table only and reappeared after a reopen — whether or not `Flush()`, `ForceSave()`, or `VacuumAsync()` had been called — and `Table.CompactStorage()` was not yet consistent enough in our runs for a message queue to rely on. **SharpCoreDB 2.0.0.2 fixes that at the engine level**: deletes are recorded with durable commit-time tombstone markers and the reopen-integrity edge cases are locked in by the engine's reopen round-trip test matrix.
 
-Since a queue cannot let a received, delivered, or purged message reappear after a restart, the provider keeps deletion durable on its own terms:
+Even so, this provider keeps its own deletion convention in 7.1.1, so an existing store upgrades with **zero data migration** and no store written by 7.1.1 depends on file markers that pre-2.0 engines cannot read:
 
 - **Deletes are tombstones.** `Delete`, `Purge`, and the source side of `Move` rewrite the row with `area = -1` and an empty value. That is an update, which SharpCoreDB persists, and tombstoned rows are invisible to every read API. Re-writing a tombstoned key updates the row in place (the primary key is still held, so an insert would be rejected).
 - **Space is reclaimed by generational compaction.** Once tombstones number at least 4,096 *and* outnumber live rows, live rows are copied into a fresh table (`queue_items_g1`, `_g2`, …), the copy is flushed, the manifest's `table` is switched (the commit point), the old generation's file handle is released and its data file deleted. Because a table that has been written to in the current session is best left for the next open to drop, its catalogue entry is removed then. A crash at any point leaves a readable store: before the commit the new generation is an orphan, after it the old one is, and either is cleaned up at the next open.
 
-This is a provider-level convention, not a change to the on-disk format SharpCoreDB owns, and it is intended to be temporary. Looking ahead, once SharpCoreDB records removals durably — for instance by appending delete markers to the table log and honouring them on load, or by offering a compaction step that is safe to invoke on an open table — the provider can return to physical deletes behind the same manifest version, recognising existing `area = -1` rows during a one-time compaction so no data migration is needed. We intend to share these observations with the SharpCoreDB maintainers; the engine is under active development and this is the kind of refinement a later release is well placed to make.
+This is a provider-level convention, not a change to the on-disk format SharpCoreDB owns. The next provider release is expected to give it up and return to physical deletes — SharpCoreDB 2.0.0.2 records those durably — behind the same manifest format, recognising existing `area = -1` rows during a one-time compaction so no data migration is needed.
 
 ## Benchmark: SQLite vs SharpCoreDB
 
 In-process `IMessageStore` numbers from the `ServiceMq.Benchmarks` console app, both providers measured sequentially in one process. Each operation is the **median of 3 samples** on fixtures rebuilt per sample, so no sample benefits from an earlier one having emptied the table or created the rows it touches: appends hit rows that already exist, each purge removes 500 freshly written rows, each move and delete sample has its own key range. Treat them as shape, not spec — they vary by hardware and disk.
 
 **SharpCoreDB encrypts every payload here and SQLite does not**, so the write-side rows are not comparing equivalent work.
+
+> The numbers below were measured with **package 7.1.0**, which shipped the SharpCoreDB **1.9.3** engine. Package 7.1.1 upgrades the engine to **2.0.0.2** (see the upgrade notes above); the table is deliberately left as measured so the provider's published figures stay continuous from the 7.1.0 release.
 
 Environment for the table below: Windows 11 (10.0.26200) x64, .NET 10.0.11, 12 logical processors; Release build; 5,000 writes / 5,000 reads / 1,000 appends / 500 moves / 500 deletes / 500-row purges.
 
@@ -93,7 +141,7 @@ What the numbers say:
 - A single table holds all six storage areas; the primary key is namespaced `"<area>:<key>"`.
 - Because the area is only a key prefix, the provider maintains an in-memory per-area index of key → (length, created, modified). This supplies the ordinal `GetKeys` ordering that `IMessageStore` implementations are expected to provide (`SqliteMessageStore` gets it from `ORDER BY key`, the file and memory stores from an ordinal sort), keeps `Purge`/`GetStatistics` off the table scan path, and decides insert-vs-update. It is rebuilt by one full scan at open, updated after every successful mutation, and re-probed from the table for the affected key when a mutation fails part-way.
 - SharpCoreDB exposes no multi-statement transaction, so `Move` writes and **flushes** the destination row before tombstoning the source. A crash in between leaves a recoverable duplicate rather than a lost message, regardless of how the engine orders unflushed writes.
-- `Database.Load()` does not repopulate `DefaultExpressions` / `ColumnCheckExpressions` after deserialization, so a reopened table throws from `Table.Insert`. `RepairTableSchemaLists` normalizes those per-column lists at open; it can be removed once fixed upstream.
+- `Database.Load()` used to fail to repopulate `DefaultExpressions` / `ColumnCheckExpressions` after deserialization, so a reopened table threw from `Table.Insert`; SharpCoreDB fixed that upstream in 1.9.4. `RepairTableSchemaLists` still normalizes those per-column lists at open as cheap insurance for tables written by the 1.9.3 engine the 7.1.0 package shipped, and can be dropped once the provider no longer needs to support such stores.
 
 ## Building and testing
 
@@ -112,5 +160,6 @@ The SharpCoreDB test project includes fault-injection tests: an internal `IQueue
 ## Links
 
 - **SharpCoreDB repository:** <https://github.com/MPCoreDeveloper/SharpCoreDB>
-- **NuGet package:** [`SharpCoreDB`](https://www.nuget.org/packages/SharpCoreDB) — pinned to `1.9.3`. Update the version in the `.csproj` when a newer release ships.
-- **Engine issues found during implementation:** [`docs/sharpcoredb-known-issues.md`](https://github.com/MPCoreDeveloper/SharpCoreDB/blob/main/docs/sharpcoredb-known-issues.md)
+- **SharpCoreDB 2.0.0.2 release notes (engine changes & numbers):** [`docs/2.0.0.2_WHAT_CHANGED.md`](https://github.com/MPCoreDeveloper/SharpCoreDB/blob/master/docs/2.0.0.2_WHAT_CHANGED.md)
+- **NuGet package:** [`SharpCoreDB`](https://www.nuget.org/packages/SharpCoreDB) — pinned to `2.0.0.2` (package 7.1.1; 7.1.0 shipped against `1.9.3`). Update the version in the `.csproj` when a newer release ships.
+- **Engine issues found during implementation:** [`docs/sharpcoredb-known-issues.md`](https://github.com/MPCoreDeveloper/SharpCoreDB/blob/master/docs/sharpcoredb-known-issues.md)

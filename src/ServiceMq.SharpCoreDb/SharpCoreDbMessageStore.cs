@@ -17,7 +17,7 @@ namespace ServiceMq
 {
     /// <summary>
     /// SharpCoreDB storage provider for ServiceMq. Requires .NET 10.0 because the
-    /// SharpCoreDB NuGet package (1.9.3) targets net10.0 only.
+    /// SharpCoreDB NuGet package (2.0.0.2) targets net10.0 only.
     /// <para>
     /// Uses SharpCoreDB <b>directory mode</b> with the direct <c>ITable</c> API. A single
     /// table holds all storage areas; the primary key is namespaced
@@ -31,16 +31,17 @@ namespace ServiceMq
     /// no-op B-tree index, so directory mode is required for correct point operations.
     /// </para>
     /// <para>
-    /// <b>Deletes are tombstones.</b> SharpCoreDB 1.9.3's append-oriented storage writes
-    /// inserts and updates through to the table data file, but row removals (via
-    /// <c>DeleteByPrimaryKey</c> or SQL <c>DELETE</c>, with or without <c>Flush</c>,
-    /// <c>ForceSave</c>, or <c>Vacuum</c>) are applied in memory and are present again on the
-    /// next open; <c>Table.CompactStorage()</c> was not yet consistent enough in our runs to
-    /// rely on. The provider therefore marks a deleted row with <c>area = -1</c> and an empty
-    /// value, which is durable, and reclaims space by periodically rewriting live rows into a
-    /// fresh generation of the table (see <see cref="Compact"/>). Tombstoned rows are invisible
-    /// to every read API. This is intended to give way to physical deletes once a SharpCoreDB
-    /// release records removals durably; see the package README.
+    /// <b>Deletes are tombstones.</b> SharpCoreDB 1.9.x's append-oriented storage applied row
+    /// removals (via <c>DeleteByPrimaryKey</c> or SQL <c>DELETE</c>, with or without <c>Flush</c>,
+    /// <c>ForceSave</c>, or <c>Vacuum</c>) in memory only, so they were present again on the next
+    /// open. The 2.0.0.2 engine now records deletes durably with commit-time tombstone markers,
+    /// but this provider keeps its own deletion convention (below) so stores written by the
+    /// 7.1.0 / 1.9.3 package keep working with zero migration and nothing written by this version
+    /// depends on 2.x-only file markers. A deleted row is rewritten with <c>area = -1</c> and an
+    /// empty value, which is durable, and space is reclaimed by periodically rewriting live rows
+    /// into a fresh generation of the table (see <see cref="Compact"/>). Tombstoned rows are
+    /// invisible to every read API. A later release is expected to give way to physical deletes;
+    /// see the package README.
     /// </para>
     /// <para>
     /// <b>Ownership.</b> A store directory has exactly one open <see cref="SharpCoreDbMessageStore"/>
@@ -50,12 +51,13 @@ namespace ServiceMq
     /// matches how <see cref="MessageQueue"/> owns <see cref="StorageOptions.Provider"/>.
     /// </para>
     /// <para>
-    /// <b>Payload encryption.</b> SharpCoreDB 1.9.3 writes table data unencrypted to
-    /// <c>*.dat</c>, so this provider encrypts every payload itself with AES-256-GCM. The key
-    /// is derived with PBKDF2-HMAC-SHA256 from the caller-supplied master password and a
-    /// random per-store salt recorded in the store manifest (<c>servicemq-store.json</c>)
-    /// alongside the data. This is independent of, and composes with,
-    /// <see cref="StorageOptions.Protector"/>: configuring an <see cref="IStorageProtector"/>
+    /// <b>Payload encryption.</b> SharpCoreDB 2.0.0.2 (like the 1.9.x default) leaves table
+    /// payloads unencrypted in <c>*.dat</c> unless the engine's opt-in per-record at-rest
+    /// encryption flag is enabled, so this provider encrypts every payload itself with
+    /// AES-256-GCM. The key is derived with PBKDF2-HMAC-SHA256 from the caller-supplied master
+    /// password and a random per-store salt recorded in the store manifest
+    /// (<c>servicemq-store.json</c>) alongside the data. This is independent of, and composes
+    /// with, <see cref="StorageOptions.Protector"/>: configuring an <see cref="IStorageProtector"/>
     /// as well simply encrypts the payload twice.
     /// </para>
     /// </summary>
