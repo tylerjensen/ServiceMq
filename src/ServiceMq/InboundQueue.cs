@@ -46,7 +46,15 @@ namespace ServiceMq
 
         public int Count { get { return queue.Count; } }
         public Exception StateException { get { return stateException ?? queue.ReloadException ?? store.LastException; } }
-        public QueueState State { get { return state == QueueState.Failed ? state : StateException == null ? state : QueueState.Cautioned; } }
+        public QueueState State
+        {
+            get
+            {
+                if (state == QueueState.Failed) return state;
+                if (StateException == null) return state;
+                return QueueState.Cautioned;
+            }
+        }
 
         public void ClearState()
         {
@@ -96,7 +104,9 @@ namespace ServiceMq
             while (continueProcessing)
             {
                 if (!incomingSignal.WaitOne(timeoutMs)) break;
-                if (!continueProcessing) break;
+                // continueProcessing is volatile and written by Stop() from another thread,
+                // so this check is not constant; it exits promptly on stop.
+                if (!continueProcessing) break; // NOSONAR(S2589)
                 var message = queue.Dequeue();
                 if (message == null)
                 {
@@ -116,7 +126,9 @@ namespace ServiceMq
             while (continueProcessing)
             {
                 if (!incomingSignal.WaitOne(timeoutMs)) break;
-                if (!continueProcessing) break;
+                // continueProcessing is volatile and written by Stop() from another thread,
+                // so this check is not constant; it exits promptly on stop.
+                if (!continueProcessing) break; // NOSONAR(S2589)
                 var messages = queue.DequeueBulk(maxMessagesToReceive);
                 if (messages.Count == 0)
                 {

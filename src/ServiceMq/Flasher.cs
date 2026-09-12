@@ -31,7 +31,7 @@ namespace ServiceMq
             this.tcpClientPool = new PooledDictionary<string, TcpClient<IMessageService>>();
         }
 
-        private JsonSerializerSettings settings = new JsonSerializerSettings
+        private readonly JsonSerializerSettings settings = new JsonSerializerSettings
         {
             ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore
         };
@@ -155,54 +155,19 @@ namespace ServiceMq
         {
             NpClient<IMessageService> npClient = null;
             TcpClient<IMessageService> tcpClient = null;
-            IMessageService proxy = null;
             var poolKey = message.To.ToString();
             try
             {
-                var useNpClient = false;
-                if (message.To.Transport == Transport.Both)
-                {
-                    if (message.To.ServerName == message.From.ServerName)
-                    {
-                        useNpClient = true;
-                    }
-                }
-                else if (message.To.Transport == Transport.Np) useNpClient = true;
-
-                if (useNpClient)
-                {
-                    npClient = npClientPool.Request(poolKey,
-                        () => new NpClient<IMessageService>(
-                            new NpEndPoint(message.To.PipeName, _connectTimeOutMs)));
-                    proxy = npClient.Proxy;
-                }
-                else
-                {
-                    tcpClient = tcpClientPool.Request(poolKey,
-                        () => new TcpClient<IMessageService>(new TcpEndPoint(
-                            new IPEndPoint(IPAddress.Parse(message.To.IpAddress),
-                                message.To.Port), _connectTimeOutMs)));
-                    proxy = tcpClient.Proxy;
-                }
-
+                var proxy = GetProxy(poolKey, message, ref npClient, ref tcpClient);
                 if (null == proxy)
                 {
                     throw new IOException("Unable to get or create proxy.");
                 }
-                if (null == message.MessageBytes)
-                {
-                    proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, 1,
-                        message.MessageTypeName, message.MessageString);
-                }
-                else
-                {
-                    proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, 1,
-                        message.MessageTypeName, message.MessageBytes);
-                }
+                SendPayload(proxy, message);
             }
             catch
             {
-                //assure failed client is properly disposed and not returned to pool
+                // Assure the failed client is properly disposed and not returned to the pool.
                 if (null != tcpClient)
                 {
                     tcpClient.Dispose();
@@ -217,9 +182,46 @@ namespace ServiceMq
             }
             finally
             {
-                //return client to pool
+                // Return the client to the pool.
                 if (null != tcpClient) tcpClientPool.Release(poolKey, tcpClient);
                 if (null != npClient) npClientPool.Release(poolKey, npClient);
+            }
+        }
+
+        private IMessageService GetProxy(string poolKey, OutboundMessage message,
+            ref NpClient<IMessageService> npClient, ref TcpClient<IMessageService> tcpClient)
+        {
+            if (UsesNamedPipe(message))
+            {
+                npClient = npClientPool.Request(poolKey,
+                    () => new NpClient<IMessageService>(
+                        new NpEndPoint(message.To.PipeName, _connectTimeOutMs)));
+                return npClient.Proxy;
+            }
+            tcpClient = tcpClientPool.Request(poolKey,
+                () => new TcpClient<IMessageService>(new TcpEndPoint(
+                    new IPEndPoint(IPAddress.Parse(message.To.IpAddress),
+                        message.To.Port), _connectTimeOutMs)));
+            return tcpClient.Proxy;
+        }
+
+        private static bool UsesNamedPipe(OutboundMessage message)
+        {
+            if (message.To.Transport == Transport.Both) return message.To.ServerName == message.From.ServerName;
+            return message.To.Transport == Transport.Np;
+        }
+
+        private static void SendPayload(IMessageService proxy, OutboundMessage message)
+        {
+            if (null == message.MessageBytes)
+            {
+                proxy.EnqueueString(message.Id, message.From.ToString(), message.Sent, 1,
+                    message.MessageTypeName, message.MessageString);
+            }
+            else
+            {
+                proxy.EnqueueBytes(message.Id, message.From.ToString(), message.Sent, 1,
+                    message.MessageTypeName, message.MessageBytes);
             }
         }
 

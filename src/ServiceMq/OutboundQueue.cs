@@ -82,7 +82,15 @@ namespace ServiceMq
 
         public long Count { get { return Interlocked.Read(ref pendingCount); } }
         public Exception StateException { get { return stateException ?? queue.ReloadException ?? store.LastException; } }
-        public QueueState State { get { return state == QueueState.Failed ? state : StateException == null ? state : QueueState.Cautioned; } }
+        public QueueState State
+        {
+            get
+            {
+                if (state == QueueState.Failed) return state;
+                if (StateException == null) return state;
+                return QueueState.Cautioned;
+            }
+        }
         public void ClearState() { stateException = null; state = QueueState.Running; queue.ClearException(); store.ClearException(); }
 
         public void Stop()
@@ -172,7 +180,9 @@ namespace ServiceMq
                 try
                 {
                     if (!outgoingSignal.WaitOne(100)) continue;
-                    if (!continueProcessing) break;
+                    // continueProcessing is volatile and written by Stop() from another thread,
+                    // so this check is not constant; it exits promptly on stop.
+                    if (!continueProcessing) break; // NOSONAR(S2589)
 
                     OutboundMessage message;
                     while (continueProcessing && (message = queue.Dequeue()) != null)
@@ -214,45 +224,50 @@ namespace ServiceMq
                 try
                 {
                     if (!readySignal.Wait(100)) continue;
-                    if (!continueProcessing) break;
+                    // continueProcessing is volatile and written by Stop() from another thread,
+                    // so this check is not constant; it exits promptly on stop.
+                    if (!continueProcessing) break; // NOSONAR(S2589)
 
-                    DestinationState destination;
-                    if (!readyDestinations.TryDequeue(out destination)) continue;
-
-                    OutboundMessage message;
-                    lock (destination.SyncRoot)
-                    {
-                        destination.Scheduled = false;
-                        if (destination.Processing || destination.Messages.Count == 0 ||
-                            destination.RetryAfterUtc > DateTime.UtcNow) continue;
-                        message = destination.Messages.Peek();
-                        if (message != null) destination.Processing = true;
-                    }
-                    if (message == null)
-                    {
-                        ScheduleOrRemoveDestination(destination);
-                        continue;
-                    }
-
-                    var completed = false;
-                    try { completed = TryDeliver(message); }
-                    catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
-
-                    lock (destination.SyncRoot)
-                    {
-                        destination.Processing = false;
-                        if (completed)
-                        {
-                            destination.Messages.DequeueWithoutValidation();
-                            destination.RetryAfterUtc = default(DateTime);
-                            Interlocked.Decrement(ref pendingCount);
-                        }
-                        else destination.RetryAfterUtc = GetNextAttemptUtc(message);
-                    }
-                    ScheduleOrRemoveDestination(destination);
+                    if (!readyDestinations.TryDequeue(out var destination)) continue;
+                    DeliverToDestination(destination);
                 }
                 catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
             }
+        }
+
+        private void DeliverToDestination(DestinationState destination)
+        {
+            OutboundMessage message;
+            lock (destination.SyncRoot)
+            {
+                destination.Scheduled = false;
+                if (destination.Processing || destination.Messages.Count == 0 ||
+                    destination.RetryAfterUtc > DateTime.UtcNow) return;
+                message = destination.Messages.Peek();
+                if (message != null) destination.Processing = true;
+            }
+            if (message == null)
+            {
+                ScheduleOrRemoveDestination(destination);
+                return;
+            }
+
+            var completed = false;
+            try { completed = TryDeliver(message); }
+            catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
+
+            lock (destination.SyncRoot)
+            {
+                destination.Processing = false;
+                if (completed)
+                {
+                    destination.Messages.DequeueWithoutValidation();
+                    destination.RetryAfterUtc = default(DateTime);
+                    Interlocked.Decrement(ref pendingCount);
+                }
+                else destination.RetryAfterUtc = GetNextAttemptUtc(message);
+            }
+            ScheduleOrRemoveDestination(destination);
         }
 
         private bool TryDeliver(OutboundMessage message)

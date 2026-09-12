@@ -31,7 +31,9 @@ namespace ServiceMq
         public Exception ReloadException { get { return reloadException; } }
         public void ClearException() { reloadException = null; }
 
-        public CachingQueue(IMessageStore store, StorageArea area, string suffix,
+        // Internal cache constructor; the parameter set mirrors the caller's storage options
+        // instead of bundling them, so each caller stays explicit.
+        public CachingQueue(IMessageStore store, StorageArea area, string suffix, // NOSONAR(S107)
             Func<string, string, T> deserialize, Func<T, string> serialize,
             int maxMessagesInMemory, int reorderLevel, DurabilityMode durability, bool persistMessages = true,
             bool validateExistence = true, IEnumerable<string> initialKeys = null,
@@ -210,7 +212,9 @@ namespace ServiceMq
             catch (Exception ex)
             {
                 reloadException = ex;
-                try { store.Move(area, StorageArea.Corrupt, key); } catch { }
+                // Moving the broken record to the corrupt area is best-effort; the reload
+                // failure itself is surfaced through ReloadException either way.
+                try { store.Move(area, StorageArea.Corrupt, key); } catch { /* best-effort; surfaced via ReloadException */ }
                 if (recordDiscarded != null) recordDiscarded(key);
             }
         }

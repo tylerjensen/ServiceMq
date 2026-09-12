@@ -172,35 +172,43 @@ namespace ServiceMq
             {
                 while (true)
                 {
-                    long previousLength;
-                    var exists = TryGetLength(area, key, out previousLength);
-                    var addedMessages = exists ? 0 : 1;
-                    var valueLength = Encoding.UTF8.GetByteCount(value ?? string.Empty);
-                    var addedBytes = valueLength - previousLength;
-                    var messagesFit = !options.MaxMessages.HasValue ||
-                        incomingCount + outgoingCount + addedMessages <= options.MaxMessages.Value;
-                    var bytesFit = !options.MaxBytes.HasValue ||
-                        incomingBytes + outgoingBytes + addedBytes <= options.MaxBytes.Value;
-                    if (messagesFit && bytesFit)
-                    {
-                        inner.Write(area, key, value, durability);
-                        AddToCounters(area, addedMessages, addedBytes);
-                        Lengths(area)[key] = valueLength;
-                        return;
-                    }
-
-                    if (options.FullBehavior == QueueFullBehavior.DropOldest)
-                    {
-                        if (!DropOldest()) throw CapacityException();
-                        continue;
-                    }
-                    if (options.FullBehavior == QueueFullBehavior.Reject) throw CapacityException();
-
-                    var remaining = deadline - DateTime.UtcNow;
-                    if (remaining <= TimeSpan.Zero) throw CapacityException();
-                    Monitor.Wait(capacityLock, remaining);
+                    if (TryWriteIfFits(area, key, value, durability)) return;
+                    WaitForCapacity(deadline);
                 }
             }
+        }
+
+        private bool TryWriteIfFits(StorageArea area, string key, string value, DurabilityMode durability)
+        {
+            long previousLength;
+            var exists = TryGetLength(area, key, out previousLength);
+            var addedMessages = exists ? 0 : 1;
+            var valueLength = Encoding.UTF8.GetByteCount(value ?? string.Empty);
+            var addedBytes = valueLength - previousLength;
+            var messagesFit = !options.MaxMessages.HasValue ||
+                incomingCount + outgoingCount + addedMessages <= options.MaxMessages.Value;
+            var bytesFit = !options.MaxBytes.HasValue ||
+                incomingBytes + outgoingBytes + addedBytes <= options.MaxBytes.Value;
+            if (!messagesFit || !bytesFit) return false;
+
+            inner.Write(area, key, value, durability);
+            AddToCounters(area, addedMessages, addedBytes);
+            Lengths(area)[key] = valueLength;
+            return true;
+        }
+
+        private void WaitForCapacity(DateTime deadline)
+        {
+            if (options.FullBehavior == QueueFullBehavior.DropOldest)
+            {
+                if (!DropOldest()) throw CapacityException();
+                return;
+            }
+            if (options.FullBehavior == QueueFullBehavior.Reject) throw CapacityException();
+
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero) throw CapacityException();
+            Monitor.Wait(capacityLock, remaining);
         }
 
         private bool DropOldest()
@@ -269,7 +277,7 @@ namespace ServiceMq
             }
         }
 
-        private QueueCapacityExceededException CapacityException()
+        private static QueueCapacityExceededException CapacityException()
         {
             return new QueueCapacityExceededException("The ServiceMq storage capacity limit has been reached.");
         }

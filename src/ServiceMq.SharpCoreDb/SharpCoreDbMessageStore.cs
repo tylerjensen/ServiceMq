@@ -216,20 +216,7 @@ namespace ServiceMq
                 // default and records it in the manifest; a store whose manifest carries that
                 // marker reopens the same way; stores created by 7.1.0 / SharpCoreDB 1.9.3 (no
                 // marker) keep the neutral engine defaults so the persisted legacy layout decides.
-                string? engineMarker = null;
-                var effectiveConfig = config;
-                if (effectiveConfig == null)
-                {
-                    if (string.Equals(loaded?.Engine, EngineMarkerFast, StringComparison.Ordinal))
-                    {
-                        effectiveConfig = DefaultNewStoreConfig();
-                    }
-                    else if (loaded == null && IsNewStoreDirectory(DatabasePath))
-                    {
-                        effectiveConfig = DefaultNewStoreConfig();
-                        engineMarker = EngineMarkerFast;
-                    }
-                }
+                var (effectiveConfig, engineMarker) = ResolveEngineConfig(config, loaded, DatabasePath);
 
                 // Directory mode. EnableBatchEncryption MUST be true: SharpCoreDB append
                 // storage only encrypts table data files when this flag is set
@@ -258,10 +245,11 @@ namespace ServiceMq
             }
             catch (Exception ex)
             {
-                try { db?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-                try { cipher?.Dispose(); } catch { }
-                try { provider?.Dispose(); } catch { }
-                try { lockFile?.Dispose(); } catch { }
+                // Each resource is released best-effort so a partial open failure leaks nothing.
+                try { db?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { /* best-effort */ }
+                try { cipher?.Dispose(); } catch { /* best-effort */ }
+                try { provider?.Dispose(); } catch { /* best-effort */ }
+                try { lockFile?.Dispose(); } catch { /* best-effort */ }
                 lastException = ex;
                 throw;
             }
@@ -270,6 +258,26 @@ namespace ServiceMq
             // consistent store (see Compact) and must not fail the open.
             try { MaybeCompact(); }
             catch (Exception ex) { lastException = ex; }
+        }
+
+        private static (DatabaseConfig? Config, string? EngineMarker) ResolveEngineConfig(
+            DatabaseConfig? config, StoreManifest? loaded, string databasePath)
+        {
+            string? engineMarker = null;
+            var effectiveConfig = config;
+            if (effectiveConfig == null)
+            {
+                if (string.Equals(loaded?.Engine, EngineMarkerFast, StringComparison.Ordinal))
+                {
+                    effectiveConfig = DefaultNewStoreConfig();
+                }
+                else if (loaded == null && IsNewStoreDirectory(databasePath))
+                {
+                    effectiveConfig = DefaultNewStoreConfig();
+                    engineMarker = EngineMarkerFast;
+                }
+            }
+            return (effectiveConfig, engineMarker);
         }
 
         public IReadOnlyList<string> GetKeys(StorageArea area)
@@ -489,7 +497,8 @@ namespace ServiceMq
                 catch (Exception ex)
                 {
                     // Many keys may have been touched; re-derive the whole index from the table.
-                    try { RebuildIndex(); } catch { }
+                    // Rebuilding is best-effort; the purge failure is what gets reported.
+                    try { RebuildIndex(); } catch { /* best-effort; the purge failure is what gets reported */ }
                     lastException = ex;
                     throw;
                 }
@@ -545,7 +554,8 @@ namespace ServiceMq
                 // goes last so the directory is only handed back once everything else is closed.
                 try
                 {
-                    try { database.Flush(); } catch { }
+                    // Best-effort flush; disposal proceeds even if the flush fails.
+                    try { database.Flush(); } catch { /* best-effort; disposal proceeds */ }
                     database.DisposeAsync().AsTask().GetAwaiter().GetResult();
                 }
                 finally
@@ -651,7 +661,8 @@ namespace ServiceMq
             }
             catch
             {
-                try { DropTable(database, nextName); } catch { }
+                // Best-effort rollback of the new generation; the compaction failure is rethrown.
+                try { DropTable(database, nextName); } catch { /* best-effort; the compaction failure is rethrown */ }
                 throw;
             }
 
@@ -676,7 +687,10 @@ namespace ServiceMq
                 (previousRaw as IDisposable)?.Dispose();
                 File.Delete(Path.Combine(DatabasePath, previousName + ".dat"));
             }
-            catch { }
+            catch
+            {
+                // Best-effort space reclamation; the store is already consistent if this fails.
+            }
         }
 
         private IQueueTable OpenTable(IDatabase db, string name, out ITable raw)
@@ -713,7 +727,8 @@ namespace ServiceMq
             {
                 var stem = Path.GetFileNameWithoutExtension(file);
                 if (!IsGenerationName(stem) || catalogued.Contains(stem)) continue;
-                try { File.Delete(file); } catch (IOException) { }
+                // Best-effort delete; a file still open elsewhere is retried at the next open.
+                try { File.Delete(file); } catch (IOException) { /* best-effort; retried at the next open */ }
             }
         }
 
@@ -839,7 +854,10 @@ namespace ServiceMq
                     tombstones.Remove(rowId);
                 }
             }
-            catch { }
+            catch
+            {
+                // Never throws: this runs inside catch blocks and must not mask the original failure.
+            }
         }
 
         private long IndexedRowCount()
@@ -959,7 +977,7 @@ namespace ServiceMq
                 FormatVersion = CurrentFormatVersion,
                 Kdf = KeyDerivationFunction,
                 Iterations = DefaultKeyDerivationIterations,
-                EnvelopeVersion = EnvelopeVersion,
+                PayloadEnvelopeVersion = EnvelopeVersion,
                 Salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(SaltLength)),
                 Table = DefaultTableName,
                 Engine = engineMarker
@@ -1053,16 +1071,19 @@ namespace ServiceMq
             foreach (var kvp in row)
             {
                 if (string.Equals(kvp.Key, name, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (kvp.Value == null) return 0;
-                    if (kvp.Value is long l) return l;
-                    if (kvp.Value is int i) return i;
-                    if (kvp.Value is double d) return (long)d;
-                    if (kvp.Value is decimal m) return (long)m;
-                    return Convert.ToInt64(kvp.Value);
-                }
+                    return ToInt64(kvp.Value);
             }
             return 0;
+        }
+
+        private static long ToInt64(object value)
+        {
+            if (value == null) return 0;
+            if (value is long l) return l;
+            if (value is int i) return i;
+            if (value is double d) return (long)d;
+            if (value is decimal m) return (long)m;
+            return Convert.ToInt64(value);
         }
 
         private readonly struct RowMetadata(long length, long createdTicks, long modifiedTicks)
@@ -1085,7 +1106,7 @@ namespace ServiceMq
             public int FormatVersion { get; set; }
             public string Kdf { get; set; } = string.Empty;
             public int Iterations { get; set; }
-            public int EnvelopeVersion { get; set; }
+            public int PayloadEnvelopeVersion { get; set; }
             public string Salt { get; set; } = string.Empty;
             /// <summary>Active table name; compaction advances it through generations.</summary>
             public string? Table { get; set; }

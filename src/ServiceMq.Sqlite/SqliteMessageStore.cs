@@ -8,6 +8,7 @@ namespace ServiceMq
 {
     public sealed class SqliteMessageStore : IMessageStore
     {
+        private const string AreaParam = "$area";
         private readonly object syncRoot = new object();
         private readonly SqliteConnection connection;
         private Exception lastException;
@@ -43,7 +44,7 @@ namespace ServiceMq
                 var result = new List<string>();
                 using (var command = CreateCommand("SELECT key FROM queue_items WHERE area = $area ORDER BY key"))
                 {
-                    command.Parameters.AddWithValue("$area", (int)area);
+                    command.Parameters.AddWithValue(AreaParam, (int)area);
                     using (var reader = command.ExecuteReader()) while (reader.Read()) result.Add(reader.GetString(0));
                 }
                 return result;
@@ -56,7 +57,7 @@ namespace ServiceMq
             {
                 using (var command = CreateCommand("SELECT 1 FROM queue_items WHERE area=$area AND key=$key LIMIT 1"))
                 {
-                    command.Parameters.AddWithValue("$area", (int)area);
+                    command.Parameters.AddWithValue(AreaParam, (int)area);
                     command.Parameters.AddWithValue("$key", key);
                     return command.ExecuteScalar() != null;
                 }
@@ -69,7 +70,7 @@ namespace ServiceMq
             {
                 using (var command = CreateCommand("SELECT value, length, created_ticks, modified_ticks FROM queue_items WHERE area = $area AND key = $key"))
                 {
-                    command.Parameters.AddWithValue("$area", (int)area);
+                    command.Parameters.AddWithValue(AreaParam, (int)area);
                     command.Parameters.AddWithValue("$key", key);
                     using (var reader = command.ExecuteReader())
                     {
@@ -98,7 +99,7 @@ namespace ServiceMq
                         "INSERT INTO queue_items(area,key,value,length,created_ticks,modified_ticks) VALUES($area,$key,$value,$length,$now,$now) " +
                         "ON CONFLICT(area,key) DO UPDATE SET value=$value,length=$length,modified_ticks=$now"))
                     {
-                        command.Parameters.AddWithValue("$area", (int)area);
+                        command.Parameters.AddWithValue(AreaParam, (int)area);
                         command.Parameters.AddWithValue("$key", key);
                         command.Parameters.AddWithValue("$value", value ?? string.Empty);
                         command.Parameters.AddWithValue("$length", Encoding.UTF8.GetByteCount(value ?? string.Empty));
@@ -126,7 +127,7 @@ namespace ServiceMq
                         "value=queue_items.value || $separator || $value," +
                         "length=queue_items.length + $append_length,modified_ticks=$now"))
                     {
-                        command.Parameters.AddWithValue("$area", (int)area);
+                        command.Parameters.AddWithValue(AreaParam, (int)area);
                         command.Parameters.AddWithValue("$key", key);
                         command.Parameters.AddWithValue("$value", normalized);
                         command.Parameters.AddWithValue("$separator", separator);
@@ -146,7 +147,7 @@ namespace ServiceMq
             {
                 using (var command = CreateCommand("DELETE FROM queue_items WHERE area=$area AND key=$key"))
                 {
-                    command.Parameters.AddWithValue("$area", (int)area);
+                    command.Parameters.AddWithValue(AreaParam, (int)area);
                     command.Parameters.AddWithValue("$key", key);
                     command.ExecuteNonQuery();
                 }
@@ -186,7 +187,7 @@ namespace ServiceMq
             {
                 using (var command = CreateCommand("DELETE FROM queue_items WHERE area=$area AND modified_ticks < $ticks"))
                 {
-                    command.Parameters.AddWithValue("$area", (int)area);
+                    command.Parameters.AddWithValue(AreaParam, (int)area);
                     command.Parameters.AddWithValue("$ticks", olderThanUtc.Ticks);
                     command.ExecuteNonQuery();
                 }
@@ -199,7 +200,7 @@ namespace ServiceMq
             {
                 using (var command = CreateCommand("SELECT COUNT(*),COALESCE(SUM(length),0),MIN(created_ticks) FROM queue_items WHERE area=$area"))
                 {
-                    command.Parameters.AddWithValue("$area", (int)area);
+                    command.Parameters.AddWithValue(AreaParam, (int)area);
                     using (var reader = command.ExecuteReader())
                     {
                         reader.Read();

@@ -29,7 +29,9 @@ namespace ServiceMq
         };
         private bool disposed;
 
-        public MessageQueue(string name, Address address, string msgDir = null, ServiceWire.ILog log = null,
+        // Legacy public API preserved for backwards compatibility; the parameter count is fixed
+        // and callers are steered to MessageQueue(MessageQueueOptions) instead.
+        public MessageQueue(string name, Address address, string msgDir = null, ServiceWire.ILog log = null, // NOSONAR(S107)
             ServiceWire.IStats stats = null, double hoursReadSentLogsToLive = 48.0, int connectTimeOutMs = 500,
             bool persistMessagesSentLogs = true, bool persistMessagesReadLogs = true,
             int maxMessagesInMemory = 8192, int reorderLevel = 4096,
@@ -315,7 +317,10 @@ namespace ServiceMq
                 PurgeByRetention(StorageArea.Read, storageOptions.ReadRetention);
                 PurgeByRetention(StorageArea.DeadLetter, storageOptions.DeadLetterRetention);
             }
-            catch { }
+            catch
+            {
+                // Retention cleanup is best-effort: a purge failure must never crash the background timer.
+            }
         }
 
         private void PurgeByRetention(StorageArea area, TimeSpan retention)
@@ -325,19 +330,28 @@ namespace ServiceMq
 
         public void Dispose()
         {
-            if (disposed) return;
-            disposed = true;
-            cleanupTimer.Dispose();
-            outboundQueue.Stop();
-            inboundQueue.Stop();
-            if (npHost != null) npHost.Dispose();
-            if (tcpHost != null) tcpHost.Dispose();
-            store.Flush();
-            store.Dispose();
+            Dispose(true);
             GC.SuppressFinalize(this);
         }
 
-        private static MessageQueueOptions CreateLegacyOptions(string name, Address address, string msgDir,
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposed) return;
+            disposed = true;
+            if (disposing)
+            {
+                cleanupTimer.Dispose();
+                outboundQueue.Stop();
+                inboundQueue.Stop();
+                if (npHost != null) npHost.Dispose();
+                if (tcpHost != null) tcpHost.Dispose();
+                store.Flush();
+                store.Dispose();
+            }
+        }
+
+        // Private pass-through of the legacy MessageQueue constructor options.
+        private static MessageQueueOptions CreateLegacyOptions(string name, Address address, string msgDir, // NOSONAR(S107)
             ServiceWire.ILog log, ServiceWire.IStats stats, double retentionHours, int connectTimeout,
             bool sentLogs, bool readLogs, int maxMemory, int reorderLevel, bool asyncWrites)
         {

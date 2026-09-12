@@ -22,7 +22,7 @@ namespace ServiceMq
         public byte[] MessageBytes { get; set; }
         public string MessageString { get; set; }
 
-        private JsonSerializerSettings settings = new JsonSerializerSettings
+        private readonly JsonSerializerSettings settings = new JsonSerializerSettings
         {
             ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore
         };

@@ -55,8 +55,10 @@ namespace ServiceMq.Benchmarks
             }
             finally
             {
-                try { if (Directory.Exists(sqliteRoot)) Directory.Delete(sqliteRoot, true); } catch { }
-                try { if (Directory.Exists(sharpRoot)) Directory.Delete(sharpRoot, true); } catch { }
+                try { if (Directory.Exists(sqliteRoot)) Directory.Delete(sqliteRoot, true); }
+                catch { /* best-effort temp cleanup; nothing to do on failure */ }
+                try { if (Directory.Exists(sharpRoot)) Directory.Delete(sharpRoot, true); }
+                catch { /* best-effort temp cleanup; nothing to do on failure */ }
             }
 
             Console.WriteLine();
@@ -74,23 +76,45 @@ namespace ServiceMq.Benchmarks
             store.Write(StorageArea.Outgoing, "warmup", "warmup", DurabilityMode.FlushToDisk);
             store.Flush();
 
-            // Durable point writes. Each sample writes a distinct key range so every write is an
-            // insert, not an overwrite of the previous sample.
+            MeasureWrite(store);
+            MeasureBufferedWrite(store);
+            MeasureContains(store);
+            MeasureRead(store);
+            MeasureAppend(store);
+            MeasureStatistics(store);
+            MeasureMove(store);
+            MeasurePurge(store);
+            MeasureDelete(store);
+
+            store.Flush();
+            Console.WriteLine();
+        }
+
+        // Durable point writes. Each sample writes a distinct key range so every write is an
+        // insert, not an overwrite of the previous sample.
+        private static void MeasureWrite(IMessageStore store)
+        {
             Measure("Write (FlushToDisk)", WriteCount, sample =>
             {
                 for (int i = 0; i < WriteCount; i++)
                     store.Write(StorageArea.Outgoing, WriteKey(sample, i), BuildPayload(i), DurabilityMode.FlushToDisk);
             });
+        }
 
-            // Buffered writes, with the flush that makes them durable included in the timing.
+        // Buffered writes, with the flush that makes them durable included in the timing.
+        private static void MeasureBufferedWrite(IMessageStore store)
+        {
             Measure("Write (Buffered + 1 Flush)", WriteCount, sample =>
             {
                 for (int i = 0; i < WriteCount; i++)
                     store.Write(StorageArea.Incoming, $"buf-s{sample}-{i}", BuildPayload(i), DurabilityMode.Buffered);
                 store.Flush();
             });
+        }
 
-            // Point lookups over the rows written by sample 0 of the durable-write run.
+        // Point lookups over the rows written by sample 0 of the durable-write run.
+        private static void MeasureContains(IMessageStore store)
+        {
             Measure("Contains", ContainsCount, _ =>
             {
                 for (int i = 0; i < ContainsCount; i++)
@@ -98,7 +122,10 @@ namespace ServiceMq.Benchmarks
                     if (!store.Contains(StorageArea.Outgoing, WriteKey(0, i))) throw new InvalidOperationException("missing");
                 }
             });
+        }
 
+        private static void MeasureRead(IMessageStore store)
+        {
             Measure("Read", ReadCount, _ =>
             {
                 for (int i = 0; i < ReadCount; i++)
@@ -107,9 +134,12 @@ namespace ServiceMq.Benchmarks
                     if (e.Value == null) throw new InvalidOperationException("null value");
                 }
             });
+        }
 
-            // Append to rows that already exist, so the measured path is read-decrypt-concat-
-            // encrypt-update, not the missing-key shortcut that simply performs a Write.
+        // Append to rows that already exist, so the measured path is read-decrypt-concat-
+        // encrypt-update, not the missing-key shortcut that simply performs a Write.
+        private static void MeasureAppend(IMessageStore store)
+        {
             Measure("Append to existing (FlushToDisk)", AppendCount,
                 setup: sample =>
                 {
@@ -121,13 +151,19 @@ namespace ServiceMq.Benchmarks
                     for (int i = 0; i < AppendCount; i++)
                         store.Append(StorageArea.Sent, $"audit-s{sample}-{i}", BuildPayload(i), DurabilityMode.FlushToDisk);
                 });
+        }
 
+        private static void MeasureStatistics(IMessageStore store)
+        {
             Measure("GetStatistics", 100, _ =>
             {
                 for (int i = 0; i < 100; i++) store.GetStatistics(StorageArea.Outgoing);
             });
+        }
 
-            // Each sample moves its own key range, so every Move finds a source row.
+        // Each sample moves its own key range, so every Move finds a source row.
+        private static void MeasureMove(IMessageStore store)
+        {
             Measure("Move (Outgoing → DeadLetter)", MoveCount,
                 setup: sample =>
                 {
@@ -142,8 +178,11 @@ namespace ServiceMq.Benchmarks
                     for (int i = 0; i < MoveCount; i++)
                         store.Move(StorageArea.Outgoing, StorageArea.DeadLetter, WriteKey(sample, i));
                 });
+        }
 
-            // One purge that removes PurgeRows rows, freshly written per sample. Reported per row.
+        // One purge that removes PurgeRows rows, freshly written per sample. Reported per row.
+        private static void MeasurePurge(IMessageStore store)
+        {
             Measure($"Purge ({PurgeRows} rows, per row)", PurgeRows,
                 setup: sample =>
                 {
@@ -152,8 +191,11 @@ namespace ServiceMq.Benchmarks
                     store.Flush();
                 },
                 action: _ => store.Purge(StorageArea.Read, DateTime.UtcNow.AddSeconds(1)));
+        }
 
-            // Deletes the rows the Move run placed in DeadLetter for the same sample.
+        // Deletes the rows the Move run placed in DeadLetter for the same sample.
+        private static void MeasureDelete(IMessageStore store)
+        {
             Measure("Delete (DeadLetter)", DeleteCount,
                 setup: sample =>
                 {
@@ -168,9 +210,6 @@ namespace ServiceMq.Benchmarks
                     for (int i = 0; i < DeleteCount; i++)
                         store.Delete(StorageArea.DeadLetter, WriteKey(sample, i));
                 });
-
-            store.Flush();
-            Console.WriteLine();
         }
 
         private static string WriteKey(int sample, int i) => $"msg-s{sample}-{i}";
@@ -186,10 +225,7 @@ namespace ServiceMq.Benchmarks
             for (int sample = 0; sample < Samples; sample++)
             {
                 setup?.Invoke(sample);
-
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
+                PrepareForMeasurement();
 
                 var sw = Stopwatch.StartNew();
                 action(sample);
@@ -200,7 +236,17 @@ namespace ServiceMq.Benchmarks
             elapsed.Sort();
             var median = elapsed[elapsed.Count / 2];
             var opsPerSec = (long)(iterations / (median / 1000.0));
-            Console.WriteLine($"  {name,-34} median {median,9:F1} ms  ({opsPerSec,10:N0} ops/sec)   min {elapsed.First(),8:F1}  max {elapsed.Last(),8:F1} ms");
+            Console.WriteLine($"  {name,-34} median {median,9:F1} ms  ({opsPerSec,10:N0} ops/sec)   min {elapsed[0],8:F1}  max {elapsed[elapsed.Count - 1],8:F1} ms");
+        }
+
+        private static void PrepareForMeasurement()
+        {
+            // Forcing a full GC before each timed sample is deliberate benchmark methodology:
+            // it isolates the provider under test from prior allocations so the median reflects
+            // steady-state work rather than GC noise carried over from the previous sample.
+            GC.Collect(); // NOSONAR(S1215): intentional benchmark isolation
+            GC.WaitForPendingFinalizers();
+            GC.Collect(); // NOSONAR(S1215): intentional benchmark isolation
         }
     }
 }

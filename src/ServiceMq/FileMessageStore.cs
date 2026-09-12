@@ -73,7 +73,8 @@ namespace ServiceMq
             catch (Exception ex)
             {
                 lastException = ex;
-                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                // Best-effort removal of the temp file so a failed insert never leaves a stray .tmp.
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* best-effort cleanup */ }
                 throw;
             }
         }

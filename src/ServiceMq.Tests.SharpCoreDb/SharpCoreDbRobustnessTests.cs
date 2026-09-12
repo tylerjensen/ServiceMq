@@ -196,6 +196,8 @@ namespace ServiceMq.Tests.SharpCoreDb
                 store.Dispose();
                 store.Dispose();
                 using var reopened = Open(root);
+                reopened.Write(StorageArea.Outgoing, "a.omq", "payload", DurabilityMode.FlushToDisk);
+                Assert.Equal("payload", reopened.Read(StorageArea.Outgoing, "a.omq").Value);
             }
             finally { SharpCoreDbStorageTests.Cleanup(root); }
         }

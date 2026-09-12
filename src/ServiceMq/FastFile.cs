@@ -13,19 +13,18 @@ namespace ServiceMq
     {
         private const int AppendQueueMaxMinutesToLive = 5;
 
-        private object syncRoot = new object();
+        private readonly object syncRoot = new object();
         private Exception lastDeleteException;
         private Exception lastAppendException;
         private Exception lastWriteAllException;
 
-        private ConcurrentQueue<string> deleteQueue = 
-            new ConcurrentQueue<string>();
-        private ConcurrentDictionary<string, ConcurrentQueue<string[]>> appendQueues =
+        private readonly ConcurrentQueue<string> deleteQueue = new ConcurrentQueue<string>();
+        private readonly ConcurrentDictionary<string, ConcurrentQueue<string[]>> appendQueues =
             new ConcurrentDictionary<string, ConcurrentQueue<string[]>>();
-        private ConcurrentDictionary<string, int> pendingWrites =
+        private readonly ConcurrentDictionary<string, int> pendingWrites =
             new ConcurrentDictionary<string, int>();
-        private ConcurrentQueue<FileText> writeTextQueue = new ConcurrentQueue<FileText>(); 
-        private ConcurrentDictionary<string, DateTime> lastAppendTimes =
+        private readonly ConcurrentQueue<FileText> writeTextQueue = new ConcurrentQueue<FileText>();
+        private readonly ConcurrentDictionary<string, DateTime> lastAppendTimes =
             new ConcurrentDictionary<string, DateTime>();
 
         private ManualResetEvent deleteSignal = null;
@@ -108,35 +107,39 @@ namespace ServiceMq
                 if (writeAllSignal.WaitOne(100))
                 {
                     writeAllSignal.Reset();
-                    while (!writeTextQueue.IsEmpty)
-                    {
-                        FileText data;
-                        if (writeTextQueue.TryDequeue(out data))
-                        {
-                            try
-                            {
-                                WriteAtomic(data.FileName, data.Text);
-                            }
-                            catch (Exception e)
-                            {
-                                lastWriteAllException = e;
-                            }
-                            finally
-                            {
-                                int remaining;
-                                while (pendingWrites.TryGetValue(data.FileName, out remaining))
-                                {
-                                    if (remaining <= 1)
-                                    {
-                                        int removed;
-                                        if (pendingWrites.TryRemove(data.FileName, out removed)) break;
-                                    }
-                                    else if (pendingWrites.TryUpdate(data.FileName, remaining - 1, remaining)) break;
-                                }
-                            }
-                        }
-                    }
+                    while (!writeTextQueue.IsEmpty) WriteQueuedFile();
                 }
+            }
+        }
+
+        private void WriteQueuedFile()
+        {
+            if (!writeTextQueue.TryDequeue(out var data)) return;
+            try
+            {
+                WriteAtomic(data.FileName, data.Text);
+            }
+            catch (Exception e)
+            {
+                lastWriteAllException = e;
+            }
+            finally
+            {
+                DecrementPendingWrites(data.FileName);
+            }
+        }
+
+        private void DecrementPendingWrites(string fileName)
+        {
+            int remaining;
+            while (pendingWrites.TryGetValue(fileName, out remaining))
+            {
+                if (remaining <= 1)
+                {
+                    int removed;
+                    if (pendingWrites.TryRemove(fileName, out removed)) break;
+                }
+                else if (pendingWrites.TryUpdate(fileName, remaining - 1, remaining)) break;
             }
         }
 
@@ -146,7 +149,7 @@ namespace ServiceMq
             {
                 var queue = appendQueues.GetOrAdd(fileName, new ConcurrentQueue<string[]>());
                 queue.Enqueue(lines);
-                lastAppendTimes.AddOrUpdate(fileName, DateTime.Now, (s, time) => DateTime.Now);
+                lastAppendTimes.AddOrUpdate(fileName, DateTime.UtcNow, (s, time) => DateTime.UtcNow);
                 if (null == appendTask)
                 {
                     lock (syncRoot)
@@ -178,58 +181,53 @@ namespace ServiceMq
                 if (appendSignal.WaitOne(100))
                 {
                     appendSignal.Reset();
-                    //append and clean up - clean up
+                    // Append and clean up.
                     try
                     {
-                        var files = appendQueues.Keys.ToArray();
-                        foreach (var file in files)
-                        {
-                            ConcurrentQueue<string[]> queue;
-                            if (appendQueues.TryGetValue(file, out queue))
-                            {
-                                //pull all lines from queue
-                                var lines = new List<string>();
-                                while (!queue.IsEmpty)
-                                {
-                                    string[] txt;
-                                    if (queue.TryDequeue(out txt))
-                                    {
-                                        lines.AddRange(txt);
-                                    }
-                                }
-
-                                //we have all lines, write in one write to file
-                                try
-                                {
-#if (!NET35)
-                                    File.AppendAllLines(file, lines);
-#else
-                                    File.AppendAllText(file, string.Join("\r\n", lines.ToArray()));
-#endif
-                                }
-                                catch (Exception ex)
-                                {
-                                    lastAppendException = ex;
-                                }
-
-                                //see if queue should be retired
-                                DateTime lastWrite;
-                                if (lastAppendTimes.TryGetValue(file, out lastWrite))
-                                {
-                                    if ((DateTime.Now - lastWrite).TotalMinutes > AppendQueueMaxMinutesToLive)
-                                    {
-                                        appendQueues.TryRemove(file, out queue);
-                                        lastAppendTimes.TryRemove(file, out lastWrite);
-                                    }
-                                }
-                            }
-                        }
+                        foreach (var file in appendQueues.Keys.ToArray()) AppendQueuedLines(file);
                     }
                     catch (Exception e)
                     {
                         lastAppendException = e;
                     }
                 }
+            }
+        }
+
+        private void AppendQueuedLines(string file)
+        {
+            ConcurrentQueue<string[]> queue;
+            if (!appendQueues.TryGetValue(file, out queue)) return;
+
+            // Pull all lines from the queue.
+            var lines = new List<string>();
+            while (!queue.IsEmpty)
+            {
+                string[] txt;
+                if (queue.TryDequeue(out txt)) lines.AddRange(txt);
+            }
+
+            // We have all lines, write them to the file in one write.
+            try
+            {
+#if (!NET35)
+                File.AppendAllLines(file, lines);
+#else
+                File.AppendAllText(file, string.Join("\r\n", lines.ToArray()));
+#endif
+            }
+            catch (Exception ex)
+            {
+                lastAppendException = ex;
+            }
+
+            // See if the queue should be retired.
+            DateTime lastWrite;
+            if (lastAppendTimes.TryGetValue(file, out lastWrite) &&
+                (DateTime.UtcNow - lastWrite).TotalMinutes > AppendQueueMaxMinutesToLive)
+            {
+                appendQueues.TryRemove(file, out queue);
+                lastAppendTimes.TryRemove(file, out lastWrite);
             }
         }
 
@@ -267,29 +265,31 @@ namespace ServiceMq
                     try
                     {
                         deleteSignal.Reset();
-                        while (!deleteQueue.IsEmpty)
-                        {
-                            try
-                            {
-                                string fileName;
-                                if (deleteQueue.TryDequeue(out fileName))
-                                {
-                                    //don't try to delete it until it has been written if in fact its is pending
-                                    SpinWait.SpinUntil(() => !pendingWrites.ContainsKey(fileName));
-                                    DeleteFile(fileName);
-                                }
-                            }
-                            catch (Exception ie)
-                            {
-                                lastDeleteException = ie;
-                            }
-                        }
+                        while (!deleteQueue.IsEmpty) DeleteQueuedFile();
                     }
                     catch (Exception e)
                     {
                         lastDeleteException = e;
                     }
                 }
+            }
+        }
+
+        private void DeleteQueuedFile()
+        {
+            try
+            {
+                string fileName;
+                if (deleteQueue.TryDequeue(out fileName))
+                {
+                    // Don't try to delete it until it has been written if in fact it is pending.
+                    SpinWait.SpinUntil(() => !pendingWrites.ContainsKey(fileName));
+                    DeleteFile(fileName);
+                }
+            }
+            catch (Exception ie)
+            {
+                lastDeleteException = ie;
             }
         }
 
@@ -337,66 +337,43 @@ namespace ServiceMq
             if (!_disposed)
             {
                 _disposed = true; //prevent second cleanup
-                if (disposing)
-                {
-                    //cleanup here
-                    continueProcessing = false;
-                    if (null != deleteSignal) deleteSignal.Set();
-                    if (null != appendSignal) appendSignal.Set();
-                    if (null != writeAllSignal) writeAllSignal.Set();
-                    if (null != deleteTask) deleteTask.Wait();
-                    if (null != appendTask) appendTask.Wait();
-                    if (null != writeAllTask) writeAllTask.Wait();
-#if (!NET35)
-                    if (null != deleteSignal)
-                    {
-                        deleteSignal.Dispose();
-                        deleteSignal = null;
-                    }
-                    if (null != appendSignal)
-                    {
-                        appendSignal.Dispose();
-                        appendSignal = null;
-                    }
-                    if (null != writeAllSignal)
-                    {
-                        writeAllSignal.Dispose();
-                        writeAllSignal = null;
-                    }
-#else
-                    if (null != deleteSignal)
-                    {
-                        deleteSignal.Close();
-                        deleteSignal = null;
-                    }
-                    if (null != appendSignal)
-                    {
-                        appendSignal.Close();
-                        appendSignal = null;
-                    }
-                    if (null != writeAllSignal)
-                    {
-                        writeAllSignal.Close();
-                        writeAllSignal = null;
-                    }
-#endif
-                    if (null != deleteTask)
-                    {
-                        deleteTask.Dispose();
-                        deleteTask = null;
-                    }
-                    if (null != appendTask)
-                    {
-                        appendTask.Dispose();
-                        appendTask = null;
-                    }
-                    if (null != writeAllTask)
-                    {
-                        writeAllTask.Dispose();
-                        writeAllTask = null;
-                    }
-                }
+                if (disposing) DisposeManagedResources();
             }
+        }
+
+        private void DisposeManagedResources()
+        {
+            continueProcessing = false;
+            if (null != deleteSignal) deleteSignal.Set();
+            if (null != appendSignal) appendSignal.Set();
+            if (null != writeAllSignal) writeAllSignal.Set();
+            if (null != deleteTask) deleteTask.Wait();
+            if (null != appendTask) appendTask.Wait();
+            if (null != writeAllTask) writeAllTask.Wait();
+            DisposeSignal(ref deleteSignal);
+            DisposeSignal(ref appendSignal);
+            DisposeSignal(ref writeAllSignal);
+            DisposeTask(ref deleteTask);
+            DisposeTask(ref appendTask);
+            DisposeTask(ref writeAllTask);
+        }
+
+        private static void DisposeSignal(ref ManualResetEvent signal)
+        {
+            if (null == signal) return;
+#if (!NET35)
+            signal.Dispose();
+#else
+            signal.Close();
+#endif
+            signal = null;
+        }
+
+        private static void DisposeTask(ref Task task)
+        {
+            if (null == task) return;
+            task.Dispose();
+            task = null;
         }
 
         #endregion

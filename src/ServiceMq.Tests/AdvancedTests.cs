@@ -33,7 +33,7 @@ namespace ServiceMq.Tests
             using (var q1 = new MessageQueue("qd1", q1Address, _testFilesRoot + @"\qd1"))
             {
                 q1.Send(q2Address, "hello world 1");
-                Thread.Sleep(200); //destination not available
+                Settle(200); //destination not available
                 q1.Send(q2Address, "hello world 2");
                 using (var q2 = new MessageQueue("qd2", q2Address, _testFilesRoot + @"\qd2"))
                 {
@@ -137,7 +137,7 @@ namespace ServiceMq.Tests
                     Assert.True(msg.Id == id);
                 }
 
-                Thread.Sleep(200);
+                Settle(200);
 
                 using (var q1 = new MessageQueue("qf1", q1Address, _testFilesRoot + @"\qf1"))
                 {
@@ -169,19 +169,38 @@ namespace ServiceMq.Tests
                 q1.Send(q2Address, "hello world 2");
                 q1.Send(q2Address, "hello world 3");
                 q1.Send(q2Address, "hello world 4");
-                Thread.Sleep(250);
+                WaitUntil(() => q2.CountInbound == 4, 3000);
                 var msg = q2.ReceiveBulk(2);
                 Assert.NotNull(msg);
                 Assert.Equal(2, msg.Count);
                 Assert.Equal("hello world 1", msg[0].To<string>());
                 Assert.Equal("hello world 2", msg[1].To<string>());
-                Thread.Sleep(250);
+                WaitUntil(() => q2.CountInbound == 2, 3000);
                 msg = q2.ReceiveBulk(2);
                 Assert.NotNull(msg);
                 Assert.Equal(2, msg.Count);
                 Assert.Equal("hello world 3", msg[0].To<string>());
                 Assert.Equal("hello world 4", msg[1].To<string>());
             }
+        }
+
+        private static bool WaitUntil(Func<bool> condition, int timeoutMs)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (condition()) return true;
+                Thread.Sleep(10);
+            }
+            return condition();
+        }
+
+        private static void Settle(int milliseconds)
+        {
+            // A fixed settle period is required here: the async delivery attempt to a
+            // destination that is down has no externally observable state to poll for, so
+            // we wait for the retry to be scheduled before proceeding.
+            Thread.Sleep(milliseconds);
         }
     }
 }
