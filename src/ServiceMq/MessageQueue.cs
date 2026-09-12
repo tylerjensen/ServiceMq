@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using ServiceWire.NamedPipes;
 using ServiceWire.TcpIp;
@@ -155,6 +156,40 @@ namespace ServiceMq
             return BroadcastMsg(message, messageType, destinations.Select(GetOptimalAddress));
         }
 
+        // ----- Async send surface -----------------------------------------------------------
+
+        public Task<Guid> SendAsync<T>(Address destination, T message, CancellationToken cancellationToken = default)
+        {
+            return SendMsgAsync(JsonConvert.SerializeObject(message, serializerSettings), typeof(T).FullName,
+                GetOptimalAddress(destination), cancellationToken);
+        }
+
+        public Task<Guid> SendAsync(Address destination, string messageType, string message, CancellationToken cancellationToken = default)
+        {
+            return SendMsgAsync(message, messageType, GetOptimalAddress(destination), cancellationToken);
+        }
+
+        public Task<Guid> SendBytesAsync(Address destination, byte[] message, string messageType, CancellationToken cancellationToken = default)
+        {
+            return SendMsgAsync(message, messageType, GetOptimalAddress(destination), cancellationToken);
+        }
+
+        public Task<Guid> BroadcastAsync<T>(IEnumerable<Address> destinations, T message, CancellationToken cancellationToken = default)
+        {
+            return BroadcastMsgAsync(JsonConvert.SerializeObject(message, serializerSettings), typeof(T).FullName,
+                destinations.Select(GetOptimalAddress), cancellationToken);
+        }
+
+        public Task<Guid> BroadcastAsync(IEnumerable<Address> destinations, string messageType, string message, CancellationToken cancellationToken = default)
+        {
+            return BroadcastMsgAsync(message, messageType, destinations.Select(GetOptimalAddress), cancellationToken);
+        }
+
+        public Task<Guid> BroadcastBytesAsync(IEnumerable<Address> destinations, byte[] message, string messageType, CancellationToken cancellationToken = default)
+        {
+            return BroadcastMsgAsync(message, messageType, destinations.Select(GetOptimalAddress), cancellationToken);
+        }
+
         public Message Receive(int timeoutMs = -1)
         {
             ThrowIfInboundFailed();
@@ -191,6 +226,44 @@ namespace ServiceMq
             inboundQueue.ReEnqueue(message);
         }
 
+        // ----- Async receive surface -------------------------------------------------------
+
+        public Task<Message> ReceiveAsync(int timeoutMs = -1, CancellationToken cancellationToken = default)
+        {
+            ThrowIfInboundFailed();
+            return inboundQueue.ReceiveAsync(timeoutMs, true, cancellationToken);
+        }
+
+        public Task<IList<Message>> ReceiveBulkAsync(int maxMessagesToReceive, int timeoutMs = -1, CancellationToken cancellationToken = default)
+        {
+            ThrowIfInboundFailed();
+            return inboundQueue.ReceiveBulkAsync(maxMessagesToReceive, timeoutMs, true, cancellationToken);
+        }
+
+        public Task<Message> AcceptAsync(int timeoutMs = -1, CancellationToken cancellationToken = default)
+        {
+            ThrowIfInboundFailed();
+            return inboundQueue.ReceiveAsync(timeoutMs, false, cancellationToken);
+        }
+
+        public Task<IList<Message>> AcceptBulkAsync(int maxMessagesToReceive, int timeoutMs = -1, CancellationToken cancellationToken = default)
+        {
+            ThrowIfInboundFailed();
+            return inboundQueue.ReceiveBulkAsync(maxMessagesToReceive, timeoutMs, false, cancellationToken);
+        }
+
+        public Task AcknowledgeAsync(Message message, CancellationToken cancellationToken = default)
+        {
+            ThrowIfInboundFailed();
+            return inboundQueue.AcknowledgeAsync(message, cancellationToken);
+        }
+
+        public Task ReEnqueueAsync(Message message, CancellationToken cancellationToken = default)
+        {
+            ThrowIfInboundFailed();
+            return inboundQueue.ReEnqueueAsync(message, cancellationToken);
+        }
+
         public IReadOnlyList<DeadLetter> GetDeadLetters() { return outboundQueue.GetDeadLetters(); }
         public bool ReplayDeadLetter(string key) { return outboundQueue.ReplayDeadLetter(key); }
         public bool DeleteDeadLetter(string key) { return outboundQueue.DeleteDeadLetter(key); }
@@ -214,6 +287,157 @@ namespace ServiceMq
 
         public void RunStorageMaintenance() { CleanupStorage(null); }
         public void FlushStorage() { store.Flush(); }
+
+        // ----- Async maintenance / inspection surface --------------------------------------
+
+        public Task<IReadOnlyList<DeadLetter>> GetDeadLettersAsync(CancellationToken cancellationToken = default)
+        {
+            return outboundQueue.GetDeadLettersAsync(cancellationToken);
+        }
+
+        public Task<bool> ReplayDeadLetterAsync(string key, CancellationToken cancellationToken = default)
+        {
+            return outboundQueue.ReplayDeadLetterAsync(key, cancellationToken);
+        }
+
+        public Task<bool> DeleteDeadLetterAsync(string key, CancellationToken cancellationToken = default)
+        {
+            return outboundQueue.DeleteDeadLetterAsync(key, cancellationToken);
+        }
+
+        public async Task PurgeDeadLettersAsync(CancellationToken cancellationToken = default)
+        {
+            foreach (var deadLetter in await GetDeadLettersAsync(cancellationToken).ConfigureAwait(false))
+                await DeleteDeadLetterAsync(deadLetter.Key, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<IReadOnlyList<StorageEntry>> GetCorruptEntriesAsync(CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var keys = asyncStore != null
+                ? await asyncStore.GetKeysAsync(StorageArea.Corrupt, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetKeys(StorageArea.Corrupt), cancellationToken).ConfigureAwait(false);
+            var result = new List<StorageEntry>();
+            foreach (var key in keys)
+            {
+                result.Add(asyncStore != null
+                    ? await asyncStore.ReadAsync(StorageArea.Corrupt, key, cancellationToken).ConfigureAwait(false)
+                    : await Task.Run(() => store.Read(StorageArea.Corrupt, key), cancellationToken).ConfigureAwait(false));
+            }
+            return result;
+        }
+
+        public async Task<bool> DeleteCorruptEntryAsync(string key, CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var exists = asyncStore != null
+                ? await asyncStore.ContainsAsync(StorageArea.Corrupt, key, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.Contains(StorageArea.Corrupt, key), cancellationToken).ConfigureAwait(false);
+            if (!exists) return false;
+            if (asyncStore != null) await asyncStore.DeleteAsync(StorageArea.Corrupt, key, cancellationToken).ConfigureAwait(false);
+            else await Task.Run(() => store.Delete(StorageArea.Corrupt, key), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        public Task RunStorageMaintenanceAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RunStorageMaintenance();
+            return Task.CompletedTask;
+        }
+
+        public Task FlushStorageAsync(CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            if (asyncStore != null) return asyncStore.FlushAsync(cancellationToken);
+            return Task.Run(() => store.Flush(), cancellationToken);
+        }
+
+        public async Task<QueueStorageHealth> GetStorageHealthAsync(CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var incoming = asyncStore != null
+                ? await asyncStore.GetStatisticsAsync(StorageArea.Incoming, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetStatistics(StorageArea.Incoming), cancellationToken).ConfigureAwait(false);
+            var outgoing = asyncStore != null
+                ? await asyncStore.GetStatisticsAsync(StorageArea.Outgoing, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetStatistics(StorageArea.Outgoing), cancellationToken).ConfigureAwait(false);
+            var dead = asyncStore != null
+                ? await asyncStore.GetStatisticsAsync(StorageArea.DeadLetter, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetStatistics(StorageArea.DeadLetter), cancellationToken).ConfigureAwait(false);
+            var corrupt = asyncStore != null
+                ? await asyncStore.GetStatisticsAsync(StorageArea.Corrupt, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetStatistics(StorageArea.Corrupt), cancellationToken).ConfigureAwait(false);
+            var read = asyncStore != null
+                ? await asyncStore.GetStatisticsAsync(StorageArea.Read, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetStatistics(StorageArea.Read), cancellationToken).ConfigureAwait(false);
+            var sent = asyncStore != null
+                ? await asyncStore.GetStatisticsAsync(StorageArea.Sent, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetStatistics(StorageArea.Sent), cancellationToken).ConfigureAwait(false);
+            var exception = StateExceptionInbound ?? StateExceptionOutbound ?? store.LastException;
+            return new QueueStorageHealth
+            {
+                State = exception == null ? QueueState.Running : QueueState.Cautioned,
+                LastException = exception,
+                IncomingMessages = incoming.Count,
+                OutgoingMessages = outgoing.Count,
+                DeadLetterMessages = dead.Count,
+                CorruptMessages = corrupt.Count,
+                StoredBytes = incoming.Bytes + outgoing.Bytes + dead.Bytes + corrupt.Bytes + read.Bytes + sent.Bytes,
+                OldestIncomingUtc = incoming.OldestUtc,
+                OldestOutgoingUtc = outgoing.OldestUtc
+            };
+        }
+
+        private Task<Guid> SendMsgAsync(string value, string messageType, Address destination, CancellationToken cancellationToken)
+        {
+            ThrowIfOutboundFailed();
+            var message = NewOutbound(destination, messageType);
+            message.MessageString = value;
+            return EnqueueOutboundAsync(message, cancellationToken);
+        }
+
+        private Task<Guid> SendMsgAsync(byte[] value, string messageType, Address destination, CancellationToken cancellationToken)
+        {
+            ThrowIfOutboundFailed();
+            var message = NewOutbound(destination, messageType);
+            message.MessageBytes = value;
+            return EnqueueOutboundAsync(message, cancellationToken);
+        }
+
+        private async Task<Guid> BroadcastMsgAsync(string value, string messageType, IEnumerable<Address> destinations, CancellationToken cancellationToken)
+        {
+            ThrowIfOutboundFailed();
+            var id = Guid.NewGuid();
+            var sent = DateTime.UtcNow;
+            foreach (var destination in destinations)
+            {
+                var message = NewOutbound(destination, messageType, id, sent);
+                message.MessageString = value;
+                await EnqueueOutboundAsync(message, cancellationToken).ConfigureAwait(false);
+            }
+            return id;
+        }
+
+        private async Task<Guid> BroadcastMsgAsync(byte[] value, string messageType, IEnumerable<Address> destinations, CancellationToken cancellationToken)
+        {
+            ThrowIfOutboundFailed();
+            var id = Guid.NewGuid();
+            var sent = DateTime.UtcNow;
+            foreach (var destination in destinations)
+            {
+                var message = NewOutbound(destination, messageType, id, sent);
+                message.MessageBytes = value;
+                await EnqueueOutboundAsync(message, cancellationToken).ConfigureAwait(false);
+            }
+            return id;
+        }
+
+        private async Task<Guid> EnqueueOutboundAsync(OutboundMessage message, CancellationToken cancellationToken)
+        {
+            await outboundQueue.EnqueueAsync(message, cancellationToken).ConfigureAwait(false);
+            return message.Id;
+        }
 
         private Guid SendMsg(string value, string messageType, Address destination)
         {

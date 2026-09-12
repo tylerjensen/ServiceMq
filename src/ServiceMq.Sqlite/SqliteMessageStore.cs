@@ -2,11 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 
 namespace ServiceMq
 {
-    public sealed class SqliteMessageStore : IMessageStore
+    public sealed class SqliteMessageStore : IMessageStore, IAsyncMessageStore
     {
         private const string AreaParam = "$area";
         private readonly object syncRoot = new object();
@@ -229,6 +231,76 @@ namespace ServiceMq
                 Flush();
                 connection.Dispose();
             }
+        }
+
+        // IAsyncMessageStore — Microsoft.Data.Sqlite's async methods are thin wrappers over the
+        // same synchronous SQLite engine, so the async surface serializes on the shared connection
+        // lock and offloads the work, keeping the caller's thread free.
+        public Task<IReadOnlyList<string>> GetKeysAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => GetKeys(area), cancellationToken);
+        }
+
+        public Task<bool> ContainsAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Contains(area, key), cancellationToken);
+        }
+
+        public Task<StorageEntry> ReadAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Read(area, key), cancellationToken);
+        }
+
+        public Task WriteAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Write(area, key, value, durability), cancellationToken);
+        }
+
+        public Task AppendAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Append(area, key, value, durability), cancellationToken);
+        }
+
+        public Task DeleteAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Delete(area, key), cancellationToken);
+        }
+
+        public Task MoveAsync(StorageArea source, StorageArea destination, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Move(source, destination, key), cancellationToken);
+        }
+
+        public Task PurgeAsync(StorageArea area, DateTime olderThanUtc, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Purge(area, olderThanUtc), cancellationToken);
+        }
+
+        public Task<StorageAreaStatistics> GetStatisticsAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => GetStatistics(area), cancellationToken);
+        }
+
+        public Task ClearExceptionAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ClearException();
+            return Task.CompletedTask;
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Flush(), cancellationToken);
         }
 
         private SqliteCommand CreateCommand(string sql)

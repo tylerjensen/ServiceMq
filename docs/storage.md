@@ -17,6 +17,7 @@ consumed or acknowledged.
 | `FileMessageStore` | Disk | Default; atomic file-per-message records and readable audit files |
 | `MemoryMessageStore` | Process only | Fast and isolated; all data disappears with the process |
 | `SqliteMessageStore` | Disk | Optional package; indexed records and SQLite transactions |
+| `SharpCoreDbMessageStore` | Disk | Optional package (net10.0); AES-256-GCM payload encryption, compact columnar storage |
 | Custom `IMessageStore` | Provider-defined | Integrate another local store or application-specific engine |
 
 ### Default file provider
@@ -56,7 +57,7 @@ If `Durability` is `MemoryOnly` and no provider is supplied, ServiceMq creates a
 ### SQLite provider
 
 ```shell
-dotnet add package ServiceMq.Sqlite --version 7.1.0
+dotnet add package ServiceMq.Sqlite --version 7.3.0
 ```
 
 ```csharp
@@ -75,7 +76,7 @@ message. `FlushStorage()` and orderly disposal perform an explicit full checkpoi
 ### SharpCoreDB provider
 
 ```shell
-dotnet add package ServiceMq.SharpCoreDb --version 7.1.1
+dotnet add package ServiceMq.SharpCoreDb --version 7.3.0
 ```
 
 ```csharp

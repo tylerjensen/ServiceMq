@@ -123,6 +123,19 @@ namespace ServiceMq
             outgoingSignal.Set();
         }
 
+        public async Task EnqueueAsync(OutboundMessage message, CancellationToken cancellationToken = default)
+        {
+            string key;
+            lock (enqueueLock)
+            {
+                key = keyGenerator.Next(".omq");
+                message.Filename = key;
+            }
+            await queue.EnqueueAsync(key, message, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref pendingCount);
+            outgoingSignal.Set();
+        }
+
         public IReadOnlyList<DeadLetter> GetDeadLetters()
         {
             var result = new List<DeadLetter>();
@@ -170,6 +183,81 @@ namespace ServiceMq
         {
             if (!store.Contains(StorageArea.DeadLetter, key)) return false;
             store.Delete(StorageArea.DeadLetter, key);
+            return true;
+        }
+
+        public async Task<IReadOnlyList<DeadLetter>> GetDeadLettersAsync(CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var result = new List<DeadLetter>();
+            var keys = asyncStore != null
+                ? await asyncStore.GetKeysAsync(StorageArea.DeadLetter, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetKeys(StorageArea.DeadLetter), cancellationToken).ConfigureAwait(false);
+            foreach (var key in keys.Where(x => x.EndsWith(".dlq", StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    string reason;
+                    var value = asyncStore != null
+                        ? (await asyncStore.ReadAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)).Value
+                        : await Task.Run(() => store.Read(StorageArea.DeadLetter, key).Value, cancellationToken).ConfigureAwait(false);
+                    var message = ParseDeadLetter(key, value, out reason);
+                    result.Add(new DeadLetter
+                    {
+                        Key = key,
+                        MessageId = message.Id,
+                        Destination = message.To,
+                        Sent = message.Sent,
+                        Attempts = message.SendAttempts,
+                        MessageTypeName = message.MessageTypeName,
+                        Reason = reason
+                    });
+                }
+                catch (Exception ex) { stateException = ex; }
+            }
+            return result;
+        }
+
+        public async Task<bool> ReplayDeadLetterAsync(string key, CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var exists = asyncStore != null
+                ? await asyncStore.ContainsAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.Contains(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
+            if (!exists) return false;
+
+            string reason;
+            var value = asyncStore != null
+                ? (await asyncStore.ReadAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)).Value
+                : await Task.Run(() => store.Read(StorageArea.DeadLetter, key).Value, cancellationToken).ConfigureAwait(false);
+            var message = ParseDeadLetter(key, value, out reason);
+            message.SendAttempts = 0;
+            message.LastSendAttempt = default(DateTime);
+
+            string filename;
+            lock (enqueueLock)
+            {
+                filename = keyGenerator.Next(".omq");
+                message.Filename = filename;
+            }
+            await queue.EnqueueAsync(filename, message, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref pendingCount);
+
+            if (asyncStore != null) await asyncStore.DeleteAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false);
+            else await Task.Run(() => store.Delete(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
+            outgoingSignal.Set();
+            return true;
+        }
+
+        public async Task<bool> DeleteDeadLetterAsync(string key, CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var exists = asyncStore != null
+                ? await asyncStore.ContainsAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.Contains(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
+            if (!exists) return false;
+            if (asyncStore != null) await asyncStore.DeleteAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false);
+            else await Task.Run(() => store.Delete(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
             return true;
         }
 

@@ -3,10 +3,11 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ServiceMq
 {
-    internal sealed class ConfiguredMessageStore : IMessageStore
+    internal sealed class ConfiguredMessageStore : IMessageStore, IAsyncMessageStore
     {
         private readonly object capacityLock = new object();
         private readonly IMessageStore inner;
@@ -164,6 +165,125 @@ namespace ServiceMq
         public void Flush() { inner.Flush(); }
         public void ClearException() { inner.ClearException(); }
         public void Dispose() { if (disposeInner) inner.Dispose(); }
+
+        // IAsyncMessageStore — delegates to the inner store's async surface when it implements
+        // IAsyncMessageStore, otherwise offloads the synchronous call. The capacity wait path
+        // (WriteAsync when full) is offloaded because it can block up to FullWaitTimeout.
+        public Task<IReadOnlyList<string>> GetKeysAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.GetKeysAsync(area, cancellationToken);
+            return Task.Run(() => inner.GetKeys(area), cancellationToken);
+        }
+
+        public Task<bool> ContainsAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.ContainsAsync(area, key, cancellationToken);
+            return Task.Run(() => inner.Contains(area, key), cancellationToken);
+        }
+
+        public async Task<StorageEntry> ReadAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            var asyncInner = inner as IAsyncMessageStore;
+            StorageEntry entry;
+            if (capacityEnabled && IsActiveArea(area))
+            {
+                entry = asyncInner != null
+                    ? await asyncInner.ReadAsync(area, key, cancellationToken).ConfigureAwait(false)
+                    : await Task.Run(() => inner.Read(area, key), cancellationToken).ConfigureAwait(false);
+                lock (capacityLock) Lengths(area)[key] = entry.Length;
+            }
+            else
+            {
+                entry = asyncInner != null
+                    ? await asyncInner.ReadAsync(area, key, cancellationToken).ConfigureAwait(false)
+                    : await Task.Run(() => inner.Read(area, key), cancellationToken).ConfigureAwait(false);
+            }
+            if (options.Protector != null && IsProtectedArea(area)) entry.Value = options.Protector.Unprotect(entry.Value);
+            return entry;
+        }
+
+        public Task WriteAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            var storedValue = options.Protector != null && IsProtectedArea(area)
+                ? options.Protector.Protect(value)
+                : value;
+            if (!capacityEnabled || !IsActiveArea(area))
+            {
+                var asyncInner = inner as IAsyncMessageStore;
+                if (asyncInner != null) return asyncInner.WriteAsync(area, key, storedValue, durability, cancellationToken);
+                return Task.Run(() => inner.Write(area, key, storedValue, durability), cancellationToken);
+            }
+            return Task.Run(() => WriteWithCapacity(area, key, storedValue, durability), cancellationToken);
+        }
+
+        public Task AppendAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            var storedValue = options.Protector == null ? value : options.Protector.Protect(value);
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.AppendAsync(area, key, storedValue, durability, cancellationToken);
+            return Task.Run(() => inner.Append(area, key, storedValue, durability), cancellationToken);
+        }
+
+        public Task DeleteAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.DeleteAsync(area, key, cancellationToken);
+            return Task.Run(() => inner.Delete(area, key), cancellationToken);
+        }
+
+        public Task MoveAsync(StorageArea source, StorageArea destination, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.MoveAsync(source, destination, key, cancellationToken);
+            return Task.Run(() => inner.Move(source, destination, key), cancellationToken);
+        }
+
+        public async Task PurgeAsync(StorageArea area, DateTime olderThanUtc, CancellationToken cancellationToken = default)
+        {
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) await asyncInner.PurgeAsync(area, olderThanUtc, cancellationToken).ConfigureAwait(false);
+            else await Task.Run(() => inner.Purge(area, olderThanUtc), cancellationToken).ConfigureAwait(false);
+            if (capacityEnabled && IsActiveArea(area))
+            {
+                var statistics = await GetStatisticsAsync(area, cancellationToken).ConfigureAwait(false);
+                lock (capacityLock)
+                {
+                    SetCounters(area, statistics.Count, statistics.Bytes);
+                    Lengths(area).Clear();
+                    Monitor.PulseAll(capacityLock);
+                }
+            }
+        }
+
+        public Task<StorageAreaStatistics> GetStatisticsAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.GetStatisticsAsync(area, cancellationToken);
+            return Task.Run(() => inner.GetStatistics(area), cancellationToken);
+        }
+
+        public Task ClearExceptionAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.ClearExceptionAsync(cancellationToken);
+            return Task.Run(() => inner.ClearException(), cancellationToken);
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.FlushAsync(cancellationToken);
+            return Task.Run(() => inner.Flush(), cancellationToken);
+        }
 
         private void WriteWithCapacity(StorageArea area, string key, string value, DurabilityMode durability)
         {

@@ -80,6 +80,18 @@ namespace ServiceMq
             return Dequeue(false);
         }
 
+        public Task<T> DequeueAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Dequeue(validateExistence), cancellationToken);
+        }
+
+        public Task<T> DequeueWithoutValidationAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Dequeue(false), cancellationToken);
+        }
+
         private T Dequeue(bool checkExistence)
         {
             lock (syncRoot)
@@ -115,6 +127,12 @@ namespace ServiceMq
             return result;
         }
 
+        public Task<IList<T>> DequeueBulkAsync(int maxMessagesToReceive, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => DequeueBulk(maxMessagesToReceive), cancellationToken);
+        }
+
         public T Peek()
         {
             lock (syncRoot)
@@ -135,6 +153,22 @@ namespace ServiceMq
         public void Enqueue(string key, T message)
         {
             if (persistMessages) store.Write(area, key, serialize(message), durability);
+            lock (syncRoot)
+            {
+                if (messageQueue.Count < maxMessagesInMemory && keysQueue.Count == 0)
+                    messageQueue.Enqueue(new QueueEntry { Key = key, Value = message });
+                else keysQueue.Enqueue(key);
+            }
+        }
+
+        public async Task EnqueueAsync(string key, T message, CancellationToken cancellationToken = default)
+        {
+            if (persistMessages)
+            {
+                var asyncStore = store as IAsyncMessageStore;
+                if (asyncStore != null) await asyncStore.WriteAsync(area, key, serialize(message), durability, cancellationToken).ConfigureAwait(false);
+                else await Task.Run(() => store.Write(area, key, serialize(message), durability), cancellationToken).ConfigureAwait(false);
+            }
             lock (syncRoot)
             {
                 if (messageQueue.Count < maxMessagesInMemory && keysQueue.Count == 0)

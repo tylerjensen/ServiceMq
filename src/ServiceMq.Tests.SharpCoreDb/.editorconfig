@@ -1,0 +1,6 @@
+# ServiceMq.Tests.SharpCoreDb project-specific analyzer settings.
+# xUnit1051 (use TestContext.Current.CancellationToken in async tests) is suppressed: the
+# suite's async tests are short-lived and cancellation responsiveness is not a goal here;
+# they pass explicit CancellationTokenSource tokens where cancellation is actually exercised.
+[*.cs]
+dotnet_diagnostic.xUnit1051.severity = none

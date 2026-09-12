@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using SharpCoreDB;
 using SharpCoreDB.Interfaces;
@@ -61,7 +62,7 @@ namespace ServiceMq
     /// as well simply encrypts the payload twice.
     /// </para>
     /// </summary>
-    public sealed class SharpCoreDbMessageStore : IMessageStore
+    public sealed class SharpCoreDbMessageStore : IMessageStore, IAsyncMessageStore
     {
         private const string DefaultTableName = "queue_items";
         private const string GenerationSuffix = "_g";
@@ -568,6 +569,76 @@ namespace ServiceMq
                     }
                 }
             }
+        }
+
+        // IAsyncMessageStore — SharpCoreDB's direct ITable point operations are fast and already
+        // serialized on syncRoot, so the async surface offloads the synchronous work to the thread
+        // pool, keeping the caller's thread free without changing the storage semantics.
+        public Task<IReadOnlyList<string>> GetKeysAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => GetKeys(area), cancellationToken);
+        }
+
+        public Task<bool> ContainsAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Contains(area, key), cancellationToken);
+        }
+
+        public Task<StorageEntry> ReadAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Read(area, key), cancellationToken);
+        }
+
+        public Task WriteAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Write(area, key, value, durability), cancellationToken);
+        }
+
+        public Task AppendAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Append(area, key, value, durability), cancellationToken);
+        }
+
+        public Task DeleteAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Delete(area, key), cancellationToken);
+        }
+
+        public Task MoveAsync(StorageArea source, StorageArea destination, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Move(source, destination, key), cancellationToken);
+        }
+
+        public Task PurgeAsync(StorageArea area, DateTime olderThanUtc, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Purge(area, olderThanUtc), cancellationToken);
+        }
+
+        public Task<StorageAreaStatistics> GetStatisticsAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => GetStatistics(area), cancellationToken);
+        }
+
+        public Task ClearExceptionAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ClearException();
+            return Task.CompletedTask;
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Flush(), cancellationToken);
         }
 
         // ----- rows, tombstones, compaction ----------------------------------------------

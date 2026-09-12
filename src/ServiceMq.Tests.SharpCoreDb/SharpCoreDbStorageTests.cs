@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace ServiceMq.Tests.SharpCoreDb
@@ -125,6 +126,75 @@ namespace ServiceMq.Tests.SharpCoreDb
                 using (var store = new SharpCoreDbMessageStore(root, Password))
                 {
                     Assert.Equal(secret, store.Read(StorageArea.Outgoing, "secret.omq").Value);
+                }
+            }
+            finally
+            {
+                Cleanup(root);
+            }
+        }
+
+        [Fact]
+        public async Task SharpCoreDbStore_AsyncSurface_RoundTrips()
+        {
+            var root = NewRoot();
+            try
+            {
+                using (var store = new SharpCoreDbMessageStore(root, Password))
+                {
+                    await store.WriteAsync(StorageArea.Outgoing, "a.omq", "payload", DurabilityMode.FlushToDisk);
+                    Assert.True(await store.ContainsAsync(StorageArea.Outgoing, "a.omq"));
+                    Assert.Equal("payload", (await store.ReadAsync(StorageArea.Outgoing, "a.omq")).Value);
+                    await store.AppendAsync(StorageArea.Outgoing, "a.omq", "more", DurabilityMode.FlushToDisk);
+                    await store.MoveAsync(StorageArea.Outgoing, StorageArea.DeadLetter, "a.omq");
+                    Assert.Equal(1, (await store.GetStatisticsAsync(StorageArea.DeadLetter)).Count);
+                    await store.DeleteAsync(StorageArea.DeadLetter, "a.omq");
+                    Assert.False(await store.ContainsAsync(StorageArea.DeadLetter, "a.omq"));
+                }
+            }
+            finally
+            {
+                Cleanup(root);
+            }
+        }
+
+        [Fact]
+        public async Task SharpCoreDbStore_EndToEndThroughMessageQueue_Async()
+        {
+            var suffix = Guid.NewGuid().ToString("N");
+            var root = Path.Combine(Path.GetTempPath(), "ServiceMq.SharpCoreDb.Tests", suffix);
+            var senderAddress = new Address("scdb-async-sender-" + suffix);
+            var receiverAddress = new Address("scdb-async-receiver-" + suffix);
+            try
+            {
+                var receiverOptions = new MessageQueueOptions
+                {
+                    Name = "scdb-async-receiver",
+                    Address = receiverAddress,
+                    Storage = new StorageOptions
+                    {
+                        Durability = DurabilityMode.FlushToDisk,
+                        Provider = new SharpCoreDbMessageStore(Path.Combine(root, "receiver"), Password)
+                    }
+                };
+                using (var receiver = new MessageQueue(receiverOptions))
+                using (var sender = new MessageQueue(new MessageQueueOptions
+                {
+                    Name = "scdb-async-sender",
+                    Address = senderAddress,
+                    Storage = new StorageOptions
+                    {
+                        Durability = DurabilityMode.FlushToDisk,
+                        Provider = new SharpCoreDbMessageStore(Path.Combine(root, "sender"), Password)
+                    }
+                }))
+                {
+                    var id = await sender.SendAsync(receiverAddress, "hello sharpcoredb async");
+                    var message = await receiver.ReceiveAsync(5000);
+                    Assert.NotNull(message);
+                    Assert.Equal(id, message.Id);
+                    Assert.Equal("hello sharpcoredb async", message.To<string>());
+                    Assert.Equal(0, (await receiver.GetStorageHealthAsync()).IncomingMessages);
                 }
             }
             finally
