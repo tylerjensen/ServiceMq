@@ -170,3 +170,4 @@ src/.vs/ServiceMq/DesignTimeBuild/.dtbcache
 #################
 .sonarqube/
 
+artifacts/
