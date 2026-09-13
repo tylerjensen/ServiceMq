@@ -18,7 +18,7 @@ namespace ServiceMq
 {
     /// <summary>
     /// SharpCoreDB storage provider for ServiceMq. Requires .NET 10.0 because the
-    /// SharpCoreDB NuGet package (2.0.0.2) targets net10.0 only.
+    /// SharpCoreDB NuGet package (2.0.0.3) targets net10.0 only.
     /// <para>
     /// Uses SharpCoreDB <b>directory mode</b> with the direct <c>ITable</c> API. A single
     /// table holds all storage areas; the primary key is namespaced

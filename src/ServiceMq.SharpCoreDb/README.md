@@ -4,7 +4,7 @@ A [SharpCoreDB](https://github.com/MPCoreDeveloper/SharpCoreDB) storage provider
 
 ServiceMq stores queue state behind `IMessageStore`, and ships several implementations: files (the default), memory, SQLite, and this one. They are interchangeable — pick whichever fits your deployment. This package exists so SharpCoreDB is available as a choice; it is not a recommended replacement for the SQLite or file providers.
 
-> **Requires .NET 10.0.** The SharpCoreDB NuGet package (currently `2.0.0.2`) targets `net10.0` (C# 14) only. Use `ServiceMq.Sqlite` or the built-in file store for `netstandard2.0` / `net8.0` consumers.
+> **Requires .NET 10.0.** The SharpCoreDB NuGet package (currently `2.0.0.3`) targets `net10.0` (C# 14) only. Use `ServiceMq.Sqlite` or the built-in file store for `netstandard2.0` / `net8.0` consumers.
 
 ## Upgrade: SharpCoreDB 2.0.0.2 engine (package 7.1.1)
 
@@ -198,5 +198,5 @@ The SharpCoreDB test project includes fault-injection tests: an internal `IQueue
 
 - **SharpCoreDB repository:** <https://github.com/MPCoreDeveloper/SharpCoreDB>
 - **SharpCoreDB 2.0.0.2 release notes (engine changes & numbers):** [`docs/2.0.0.2_WHAT_CHANGED.md`](https://github.com/MPCoreDeveloper/SharpCoreDB/blob/master/docs/2.0.0.2_WHAT_CHANGED.md)
-- **NuGet package:** [`SharpCoreDB`](https://www.nuget.org/packages/SharpCoreDB) — pinned to `2.0.0.2` (package 7.1.1; 7.1.0 shipped against `1.9.3`). Update the version in the `.csproj` when a newer release ships.
+- **NuGet package:** [`SharpCoreDB`](https://www.nuget.org/packages/SharpCoreDB) — pinned to `2.0.0.3` (package 7.2.0; 7.1.1 shipped against `2.0.0.2`, 7.1.0 against `1.9.3`). Update the version in the `.csproj` when a newer release ships.
 - **Engine issues found during implementation:** [`docs/sharpcoredb-known-issues.md`](https://github.com/MPCoreDeveloper/SharpCoreDB/blob/master/docs/sharpcoredb-known-issues.md)
