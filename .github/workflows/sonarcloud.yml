@@ -5,17 +5,39 @@ on:
   pull_request:
     branches:
       - master
+  push:
+    branches:
+      - master
 
 env:
   DOTNET_VERSION: '10.0.x'
   JDK_VERSION: '17'
 
 jobs:
+  check-sonar-token:
+    name: Check SONAR_TOKEN
+    runs-on: ubuntu-latest
+    outputs:
+      has-token: ${{ steps.check.outputs.defined }}
+    steps:
+      - id: check
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        # Job-level `if` cannot read secrets, so detect presence here and gate
+        # the analysis job via `needs` output. Keeps the workflow inert on repos
+        # where the token is not configured (e.g. upstream).
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "defined=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "defined=false" >> "$GITHUB_OUTPUT"
+          fi
+
   sonarcloud:
     name: SonarCloud analysis
     runs-on: ubuntu-latest
-    # Only run where the SonarCloud token secret is configured (currently the fork).
-    if: ${{ secrets.SONAR_TOKEN != '' }}
+    needs: check-sonar-token
+    if: needs.check-sonar-token.outputs.has-token == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,3 +97,4 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: ./.tools/dotnet-sonarscanner end "/d:sonar.token=$SONAR_TOKEN"
+

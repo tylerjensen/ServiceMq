@@ -10,11 +10,30 @@ env:
   DOTNET_VERSION: '10.0.x'
 
 jobs:
+  check-nuget-key:
+    name: Check NUGET_API_KEY
+    runs-on: ubuntu-latest
+    outputs:
+      has-key: ${{ steps.check.outputs.defined }}
+    steps:
+      - id: check
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        # Job-level `if` cannot read secrets, so detect presence here and gate
+        # the publish job via `needs` output. Keeps the workflow inert on repos
+        # where the key is not configured (e.g. upstream).
+        run: |
+          if [ -n "$NUGET_API_KEY" ]; then
+            echo "defined=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "defined=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish:
     name: Build, pack and push ServiceMq.SharpCoreDb
     runs-on: ubuntu-latest
-    # Only run where the NuGet API key secret is configured (currently the fork).
-    if: ${{ secrets.NUGET_API_KEY != '' }}
+    needs: check-nuget-key
+    if: needs.check-nuget-key.outputs.has-key == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,3 +58,4 @@ jobs:
             --source https://api.nuget.org/v3/index.json \
             --api-key "$NUGET_API_KEY" \
             --skip-duplicate
+
