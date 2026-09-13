@@ -57,7 +57,7 @@ If `Durability` is `MemoryOnly` and no provider is supplied, ServiceMq creates a
 ### SQLite provider
 
 ```shell
-dotnet add package ServiceMq.Sqlite --version 7.3.0
+dotnet add package ServiceMq.Sqlite --version 7.4.0
 ```
 
 ```csharp
@@ -76,7 +76,7 @@ message. `FlushStorage()` and orderly disposal perform an explicit full checkpoi
 ### SharpCoreDB provider
 
 ```shell
-dotnet add package ServiceMq.SharpCoreDb --version 7.3.0
+dotnet add package ServiceMq.SharpCoreDb --version 7.4.0
 ```
 
 ```csharp

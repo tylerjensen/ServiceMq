@@ -13,6 +13,7 @@ namespace ServiceMq
         {
             public Message Message;
             public DateTime ExpiresUtc;
+            public bool Completing;
         }
 
         private readonly CachingQueue<Message> queue;
@@ -103,6 +104,7 @@ namespace ServiceMq
         public Task ReEnqueueAsync(Message message, CancellationToken cancellationToken = default)
         {
             if (message == null) throw new ArgumentNullException("message");
+            cancellationToken.ThrowIfCancellationRequested();
             lock (leaseLock) leases.Remove(message.Id);
             queue.ReEnqueue(message.Filename, message);
             incomingSignal.Set();
@@ -139,7 +141,9 @@ namespace ServiceMq
                 var message = await queue.DequeueAsync(cancellationToken).ConfigureAwait(false);
                 if (message != null)
                 {
-                    if (logRead) await CompleteAsync(message, cancellationToken).ConfigureAwait(false);
+                    // Dequeue is the cancellation boundary: completion must return the
+                    // message even if cancellation is requested while storage is updated.
+                    if (logRead) await CompleteAsync(message, CancellationToken.None).ConfigureAwait(false);
                     else RegisterLease(message);
                     return message;
                 }
@@ -188,7 +192,7 @@ namespace ServiceMq
                 var messages = await queue.DequeueBulkAsync(maxMessagesToReceive, cancellationToken).ConfigureAwait(false);
                 if (messages.Count > 0)
                 {
-                    await CompleteMessagesAsync(messages, logRead, cancellationToken).ConfigureAwait(false);
+                    await CompleteMessagesAsync(messages, logRead).ConfigureAwait(false);
                     return messages;
                 }
                 if (deadline.HasValue && DateTime.UtcNow >= deadline.Value) break;
@@ -197,11 +201,12 @@ namespace ServiceMq
             return new List<Message>();
         }
 
-        private async Task CompleteMessagesAsync(IList<Message> messages, bool logRead, CancellationToken cancellationToken)
+        private async Task CompleteMessagesAsync(IList<Message> messages, bool logRead)
         {
             foreach (var message in messages)
             {
-                if (logRead) await CompleteAsync(message, cancellationToken).ConfigureAwait(false);
+                // A batch cannot be canceled after some of its records have been deleted.
+                if (logRead) await CompleteAsync(message, CancellationToken.None).ConfigureAwait(false);
                 else RegisterLease(message);
             }
         }
@@ -222,8 +227,31 @@ namespace ServiceMq
         public async Task AcknowledgeAsync(Message message, CancellationToken cancellationToken = default)
         {
             if (message == null) throw new ArgumentNullException("message");
-            lock (leaseLock) leases.Remove(message.Id);
-            await CompleteAsync(message, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            Lease lease;
+            lock (leaseLock)
+            {
+                leases.TryGetValue(message.Id, out lease);
+                if (lease != null) lease.Completing = true;
+            }
+            try
+            {
+                // Once completion starts, finish the acknowledgement even if the caller
+                // cancels. Keep the lease recoverable if storage completion fails.
+                await CompleteAsync(message, CancellationToken.None).ConfigureAwait(false);
+                lock (leaseLock)
+                {
+                    if (leases.TryGetValue(message.Id, out var current) && ReferenceEquals(current, lease))
+                        leases.Remove(message.Id);
+                }
+            }
+            finally
+            {
+                lock (leaseLock)
+                {
+                    if (lease != null) lease.Completing = false;
+                }
+            }
         }
 
         private void Complete(Message message)
@@ -278,7 +306,7 @@ namespace ServiceMq
                 Lease[] expired;
                 lock (leaseLock)
                 {
-                    expired = leases.Values.Where(x => x.ExpiresUtc <= DateTime.UtcNow).ToArray();
+                    expired = leases.Values.Where(x => !x.Completing && x.ExpiresUtc <= DateTime.UtcNow).ToArray();
                     foreach (var lease in expired) leases.Remove(lease.Message.Id);
                 }
                 foreach (var lease in expired) queue.ReEnqueue(lease.Message.Filename, lease.Message);

@@ -38,7 +38,7 @@ a thread: the wait is a polling `Task.Delay` loop, and the brief store I/O is of
 timeout returns `null` (or an empty list) just like the synchronous methods.
 
 ```csharp
-Message message = await queue.ReceiveAsync(timeoutMs: 5_000);
+Message message = await queue.AcceptAsync(timeoutMs: 5_000);
 if (message != null)
 {
     var order = message.To<OrderPlaced>();
@@ -52,7 +52,20 @@ it with `AcknowledgeAsync` or return it with `ReEnqueueAsync`.
 ## Cancellation
 
 Every async method accepts an optional `CancellationToken`. Cancelling a receive aborts the
-wait immediately with `OperationCanceledException`.
+wait with `OperationCanceledException`. Starting with 7.4, once a receive has dequeued
+messages, it completes storage updates and returns those messages even if cancellation
+is requested. This also applies to the entire batch returned by `ReceiveBulkAsync`:
+cancellation cannot discard a partially completed batch.
+
+`AcknowledgeAsync` checks cancellation before starting completion. Once started, it
+finishes the acknowledgement even if the token is canceled. The visibility lease is
+retained and prevented from expiring during completion; if storage fails, the lease
+can expire and redeliver the message. A token canceled before acknowledgement starts
+leaves the message and lease unchanged.
+
+`ReceiveAsync` and `ReceiveBulkAsync` remove messages before returning them. For work
+that must remain recoverable until processing succeeds, use `AcceptAsync` or
+`AcceptBulkAsync`, followed by acknowledgement.
 
 ```csharp
 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));

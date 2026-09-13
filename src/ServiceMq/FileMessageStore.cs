@@ -244,7 +244,10 @@ namespace ServiceMq
 #else
                         await writer.FlushAsync().ConfigureAwait(false);
 #endif
-                        if (durability == DurabilityMode.FlushToDisk) await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                        // FlushAsync only drains managed buffers. A durable append must
+                        // also flush the OS buffers, even if cancellation arrives now.
+                        if (durability == DurabilityMode.FlushToDisk)
+                            await Task.Run(() => stream.Flush(true)).ConfigureAwait(false);
                     }
                 }
                 finally { appendLock.Release(); }
@@ -308,7 +311,8 @@ namespace ServiceMq
 #else
                 await writer.FlushAsync().ConfigureAwait(false);
 #endif
-                if (flushToDisk) await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                // Complete the physical flush before publishing the atomic replacement.
+                if (flushToDisk) await Task.Run(() => stream.Flush(true)).ConfigureAwait(false);
             }
         }
 

@@ -187,21 +187,13 @@ namespace ServiceMq
 
         public async Task<StorageEntry> ReadAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
         {
+            if (capacityEnabled && IsActiveArea(area))
+                return await Task.Run(() => Read(area, key), cancellationToken).ConfigureAwait(false);
             var asyncInner = inner as IAsyncMessageStore;
             StorageEntry entry;
-            if (capacityEnabled && IsActiveArea(area))
-            {
-                entry = asyncInner != null
-                    ? await asyncInner.ReadAsync(area, key, cancellationToken).ConfigureAwait(false)
-                    : await Task.Run(() => inner.Read(area, key), cancellationToken).ConfigureAwait(false);
-                lock (capacityLock) Lengths(area)[key] = entry.Length;
-            }
-            else
-            {
-                entry = asyncInner != null
-                    ? await asyncInner.ReadAsync(area, key, cancellationToken).ConfigureAwait(false)
-                    : await Task.Run(() => inner.Read(area, key), cancellationToken).ConfigureAwait(false);
-            }
+            entry = asyncInner != null
+                ? await asyncInner.ReadAsync(area, key, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => inner.Read(area, key), cancellationToken).ConfigureAwait(false);
             if (options.Protector != null && IsProtectedArea(area)) entry.Value = options.Protector.Unprotect(entry.Value);
             return entry;
         }
@@ -231,6 +223,8 @@ namespace ServiceMq
         public Task DeleteAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (capacityEnabled && IsActiveArea(area))
+                return Task.Run(() => Delete(area, key), cancellationToken);
             var asyncInner = inner as IAsyncMessageStore;
             if (asyncInner != null) return asyncInner.DeleteAsync(area, key, cancellationToken);
             return Task.Run(() => inner.Delete(area, key), cancellationToken);
@@ -239,6 +233,8 @@ namespace ServiceMq
         public Task MoveAsync(StorageArea source, StorageArea destination, string key, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (capacityEnabled && (IsActiveArea(source) || IsActiveArea(destination)))
+                return Task.Run(() => Move(source, destination, key), cancellationToken);
             var asyncInner = inner as IAsyncMessageStore;
             if (asyncInner != null) return asyncInner.MoveAsync(source, destination, key, cancellationToken);
             return Task.Run(() => inner.Move(source, destination, key), cancellationToken);
@@ -246,19 +242,14 @@ namespace ServiceMq
 
         public async Task PurgeAsync(StorageArea area, DateTime olderThanUtc, CancellationToken cancellationToken = default)
         {
+            if (capacityEnabled && IsActiveArea(area))
+            {
+                await Task.Run(() => Purge(area, olderThanUtc), cancellationToken).ConfigureAwait(false);
+                return;
+            }
             var asyncInner = inner as IAsyncMessageStore;
             if (asyncInner != null) await asyncInner.PurgeAsync(area, olderThanUtc, cancellationToken).ConfigureAwait(false);
             else await Task.Run(() => inner.Purge(area, olderThanUtc), cancellationToken).ConfigureAwait(false);
-            if (capacityEnabled && IsActiveArea(area))
-            {
-                var statistics = await GetStatisticsAsync(area, cancellationToken).ConfigureAwait(false);
-                lock (capacityLock)
-                {
-                    SetCounters(area, statistics.Count, statistics.Bytes);
-                    Lengths(area).Clear();
-                    Monitor.PulseAll(capacityLock);
-                }
-            }
         }
 
         public Task<StorageAreaStatistics> GetStatisticsAsync(StorageArea area, CancellationToken cancellationToken = default)

@@ -28,13 +28,13 @@ explicit acknowledgment.
 ## Install
 
 ```shell
-dotnet add package ServiceMq --version 7.1.0
+dotnet add package ServiceMq --version 7.4.0
 ```
 
 Install an optional provider only when that store is wanted:
 
 ```shell
-dotnet add package ServiceMq.Sqlite --version 7.1.0
+dotnet add package ServiceMq.Sqlite --version 7.4.0
 dotnet add package ServiceMq.SharpCoreDb --version 7.1.1   # requires .NET 10
 ```
 

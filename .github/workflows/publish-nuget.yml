@@ -30,7 +30,7 @@ jobs:
           fi
 
   publish:
-    name: Build, pack and push ServiceMq.SharpCoreDb
+    name: Test, pack and push ServiceMq packages
     runs-on: ubuntu-latest
     needs: check-nuget-key
     if: needs.check-nuget-key.outputs.has-key == 'true'
@@ -43,10 +43,18 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-version: |
+            8.0.x
+            ${{ env.DOTNET_VERSION }}
 
-      - name: Pack ServiceMq.SharpCoreDb
-        run: dotnet pack src/ServiceMq.SharpCoreDb/ServiceMq.SharpCoreDb.csproj -c Release -o artifacts --nologo
+      - name: Test
+        run: dotnet test src/ServiceMq.slnx -c Release --nologo
+
+      - name: Pack all providers and core
+        run: |
+          dotnet pack src/ServiceMq/ServiceMq.csproj -c Release -o artifacts --nologo
+          dotnet pack src/ServiceMq.Sqlite/ServiceMq.Sqlite.csproj -c Release -o artifacts --nologo
+          dotnet pack src/ServiceMq.SharpCoreDb/ServiceMq.SharpCoreDb.csproj -c Release -o artifacts --nologo
 
       - name: Push to nuget.org
         env:
@@ -54,8 +62,10 @@ jobs:
         run: |
           package=(artifacts/*.nupkg)
           echo "Publishing ${#package[@]} package(s)"
-          dotnet nuget push "${package[@]}" \
-            --source https://api.nuget.org/v3/index.json \
-            --api-key "$NUGET_API_KEY" \
-            --skip-duplicate
+          for item in "${package[@]}"; do
+            dotnet nuget push "$item" \
+              --source https://api.nuget.org/v3/index.json \
+              --api-key "$NUGET_API_KEY" \
+              --skip-duplicate
+          done
 

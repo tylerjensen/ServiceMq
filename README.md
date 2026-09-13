@@ -29,19 +29,19 @@ The [ServiceMq User Guide](docs/user-guide.md) is the main documentation. Start 
 ## Install
 
 ```shell
-dotnet add package ServiceMq --version 7.3.0
+dotnet add package ServiceMq --version 7.4.0
 ```
 
 For SQLite storage:
 
 ```shell
-dotnet add package ServiceMq.Sqlite --version 7.3.0
+dotnet add package ServiceMq.Sqlite --version 7.4.0
 ```
 
 For SharpCoreDB storage (requires .NET 10):
 
 ```shell
-dotnet add package ServiceMq.SharpCoreDb --version 7.3.0
+dotnet add package ServiceMq.SharpCoreDb --version 7.4.0
 ```
 
 ServiceMq and ServiceMq.Sqlite target `netstandard2.0` and `net8.0`; ServiceMq.SharpCoreDb targets `net10.0` only. ServiceMq 7 uses ServiceWire 7.0.
@@ -172,6 +172,8 @@ exactly-once side effects.
 ![How to choose a storage provider](docs/images/provider-choice.svg)
 
 ## Project status
+
+See the [7.4.0 release notes](docs/release-notes-7.4.md) for async reliability fixes.
 
 ServiceMq 7.0 targets .NET Standard 2.0 and .NET 8.0 and uses ServiceWire 7.0. The test
 suite covers named pipes, TCP, restart compatibility, capacity policies, visibility
