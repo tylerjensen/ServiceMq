@@ -79,7 +79,7 @@ namespace ServiceMq
             var ipAddress = Dns.GetHostAddresses(this.ServerName)
                                 .FirstOrDefault(x => x.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(x));
 
-            if (null == ipAddress) throw new Exception("Unable to get IP address for host");
+            if (null == ipAddress) throw new InvalidOperationException("Unable to get IP address for host");
 
             this.IpAddress = ipAddress.ToString();
             this.Port = port;

@@ -164,3 +164,9 @@ pip-log.txt
 .DS_Store
 /src/.vs/ServiceMq/v15/Server/sqlite3
 src/.vs/ServiceMq/DesignTimeBuild/.dtbcache
+
+#################
+## SonarScanner build artifacts
+#################
+.sonarqube/
+

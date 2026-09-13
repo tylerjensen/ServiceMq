@@ -31,7 +31,9 @@ namespace ServiceMq
         public Exception ReloadException { get { return reloadException; } }
         public void ClearException() { reloadException = null; }
 
-        public CachingQueue(IMessageStore store, StorageArea area, string suffix,
+        // Internal cache constructor; the parameter set mirrors the caller's storage options
+        // instead of bundling them, so each caller stays explicit.
+        public CachingQueue(IMessageStore store, StorageArea area, string suffix, // NOSONAR(S107)
             Func<string, string, T> deserialize, Func<T, string> serialize,
             int maxMessagesInMemory, int reorderLevel, DurabilityMode durability, bool persistMessages = true,
             bool validateExistence = true, IEnumerable<string> initialKeys = null,
@@ -78,6 +80,18 @@ namespace ServiceMq
             return Dequeue(false);
         }
 
+        public Task<T> DequeueAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Dequeue(validateExistence), cancellationToken);
+        }
+
+        public Task<T> DequeueWithoutValidationAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Dequeue(false), cancellationToken);
+        }
+
         private T Dequeue(bool checkExistence)
         {
             lock (syncRoot)
@@ -113,6 +127,12 @@ namespace ServiceMq
             return result;
         }
 
+        public Task<IList<T>> DequeueBulkAsync(int maxMessagesToReceive, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => DequeueBulk(maxMessagesToReceive), cancellationToken);
+        }
+
         public T Peek()
         {
             lock (syncRoot)
@@ -133,6 +153,22 @@ namespace ServiceMq
         public void Enqueue(string key, T message)
         {
             if (persistMessages) store.Write(area, key, serialize(message), durability);
+            lock (syncRoot)
+            {
+                if (messageQueue.Count < maxMessagesInMemory && keysQueue.Count == 0)
+                    messageQueue.Enqueue(new QueueEntry { Key = key, Value = message });
+                else keysQueue.Enqueue(key);
+            }
+        }
+
+        public async Task EnqueueAsync(string key, T message, CancellationToken cancellationToken = default)
+        {
+            if (persistMessages)
+            {
+                var asyncStore = store as IAsyncMessageStore;
+                if (asyncStore != null) await asyncStore.WriteAsync(area, key, serialize(message), durability, cancellationToken).ConfigureAwait(false);
+                else await Task.Run(() => store.Write(area, key, serialize(message), durability), cancellationToken).ConfigureAwait(false);
+            }
             lock (syncRoot)
             {
                 if (messageQueue.Count < maxMessagesInMemory && keysQueue.Count == 0)
@@ -210,7 +246,9 @@ namespace ServiceMq
             catch (Exception ex)
             {
                 reloadException = ex;
-                try { store.Move(area, StorageArea.Corrupt, key); } catch { }
+                // Moving the broken record to the corrupt area is best-effort; the reload
+                // failure itself is surfaced through ReloadException either way.
+                try { store.Move(area, StorageArea.Corrupt, key); } catch { /* best-effort; surfaced via ReloadException */ }
                 if (recordDiscarded != null) recordDiscarded(key);
             }
         }

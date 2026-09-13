@@ -82,7 +82,15 @@ namespace ServiceMq
 
         public long Count { get { return Interlocked.Read(ref pendingCount); } }
         public Exception StateException { get { return stateException ?? queue.ReloadException ?? store.LastException; } }
-        public QueueState State { get { return state == QueueState.Failed ? state : StateException == null ? state : QueueState.Cautioned; } }
+        public QueueState State
+        {
+            get
+            {
+                if (state == QueueState.Failed) return state;
+                if (StateException == null) return state;
+                return QueueState.Cautioned;
+            }
+        }
         public void ClearState() { stateException = null; state = QueueState.Running; queue.ClearException(); store.ClearException(); }
 
         public void Stop()
@@ -112,6 +120,19 @@ namespace ServiceMq
                 queue.Enqueue(key, message);
                 Interlocked.Increment(ref pendingCount);
             }
+            outgoingSignal.Set();
+        }
+
+        public async Task EnqueueAsync(OutboundMessage message, CancellationToken cancellationToken = default)
+        {
+            string key;
+            lock (enqueueLock)
+            {
+                key = keyGenerator.Next(".omq");
+                message.Filename = key;
+            }
+            await queue.EnqueueAsync(key, message, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref pendingCount);
             outgoingSignal.Set();
         }
 
@@ -165,6 +186,81 @@ namespace ServiceMq
             return true;
         }
 
+        public async Task<IReadOnlyList<DeadLetter>> GetDeadLettersAsync(CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var result = new List<DeadLetter>();
+            var keys = asyncStore != null
+                ? await asyncStore.GetKeysAsync(StorageArea.DeadLetter, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.GetKeys(StorageArea.DeadLetter), cancellationToken).ConfigureAwait(false);
+            foreach (var key in keys.Where(x => x.EndsWith(".dlq", StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    string reason;
+                    var value = asyncStore != null
+                        ? (await asyncStore.ReadAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)).Value
+                        : await Task.Run(() => store.Read(StorageArea.DeadLetter, key).Value, cancellationToken).ConfigureAwait(false);
+                    var message = ParseDeadLetter(key, value, out reason);
+                    result.Add(new DeadLetter
+                    {
+                        Key = key,
+                        MessageId = message.Id,
+                        Destination = message.To,
+                        Sent = message.Sent,
+                        Attempts = message.SendAttempts,
+                        MessageTypeName = message.MessageTypeName,
+                        Reason = reason
+                    });
+                }
+                catch (Exception ex) { stateException = ex; }
+            }
+            return result;
+        }
+
+        public async Task<bool> ReplayDeadLetterAsync(string key, CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var exists = asyncStore != null
+                ? await asyncStore.ContainsAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.Contains(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
+            if (!exists) return false;
+
+            string reason;
+            var value = asyncStore != null
+                ? (await asyncStore.ReadAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)).Value
+                : await Task.Run(() => store.Read(StorageArea.DeadLetter, key).Value, cancellationToken).ConfigureAwait(false);
+            var message = ParseDeadLetter(key, value, out reason);
+            message.SendAttempts = 0;
+            message.LastSendAttempt = default(DateTime);
+
+            string filename;
+            lock (enqueueLock)
+            {
+                filename = keyGenerator.Next(".omq");
+                message.Filename = filename;
+            }
+            await queue.EnqueueAsync(filename, message, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref pendingCount);
+
+            if (asyncStore != null) await asyncStore.DeleteAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false);
+            else await Task.Run(() => store.Delete(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
+            outgoingSignal.Set();
+            return true;
+        }
+
+        public async Task<bool> DeleteDeadLetterAsync(string key, CancellationToken cancellationToken = default)
+        {
+            var asyncStore = store as IAsyncMessageStore;
+            var exists = asyncStore != null
+                ? await asyncStore.ContainsAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false)
+                : await Task.Run(() => store.Contains(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
+            if (!exists) return false;
+            if (asyncStore != null) await asyncStore.DeleteAsync(StorageArea.DeadLetter, key, cancellationToken).ConfigureAwait(false);
+            else await Task.Run(() => store.Delete(StorageArea.DeadLetter, key), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
         private void DispatchMessages()
         {
             while (continueProcessing)
@@ -172,7 +268,9 @@ namespace ServiceMq
                 try
                 {
                     if (!outgoingSignal.WaitOne(100)) continue;
-                    if (!continueProcessing) break;
+                    // continueProcessing is volatile and written by Stop() from another thread,
+                    // so this check is not constant; it exits promptly on stop.
+                    if (!continueProcessing) break; // NOSONAR(S2589)
 
                     OutboundMessage message;
                     while (continueProcessing && (message = queue.Dequeue()) != null)
@@ -214,45 +312,50 @@ namespace ServiceMq
                 try
                 {
                     if (!readySignal.Wait(100)) continue;
-                    if (!continueProcessing) break;
+                    // continueProcessing is volatile and written by Stop() from another thread,
+                    // so this check is not constant; it exits promptly on stop.
+                    if (!continueProcessing) break; // NOSONAR(S2589)
 
-                    DestinationState destination;
-                    if (!readyDestinations.TryDequeue(out destination)) continue;
-
-                    OutboundMessage message;
-                    lock (destination.SyncRoot)
-                    {
-                        destination.Scheduled = false;
-                        if (destination.Processing || destination.Messages.Count == 0 ||
-                            destination.RetryAfterUtc > DateTime.UtcNow) continue;
-                        message = destination.Messages.Peek();
-                        if (message != null) destination.Processing = true;
-                    }
-                    if (message == null)
-                    {
-                        ScheduleOrRemoveDestination(destination);
-                        continue;
-                    }
-
-                    var completed = false;
-                    try { completed = TryDeliver(message); }
-                    catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
-
-                    lock (destination.SyncRoot)
-                    {
-                        destination.Processing = false;
-                        if (completed)
-                        {
-                            destination.Messages.DequeueWithoutValidation();
-                            destination.RetryAfterUtc = default(DateTime);
-                            Interlocked.Decrement(ref pendingCount);
-                        }
-                        else destination.RetryAfterUtc = GetNextAttemptUtc(message);
-                    }
-                    ScheduleOrRemoveDestination(destination);
+                    if (!readyDestinations.TryDequeue(out var destination)) continue;
+                    DeliverToDestination(destination);
                 }
                 catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
             }
+        }
+
+        private void DeliverToDestination(DestinationState destination)
+        {
+            OutboundMessage message;
+            lock (destination.SyncRoot)
+            {
+                destination.Scheduled = false;
+                if (destination.Processing || destination.Messages.Count == 0 ||
+                    destination.RetryAfterUtc > DateTime.UtcNow) return;
+                message = destination.Messages.Peek();
+                if (message != null) destination.Processing = true;
+            }
+            if (message == null)
+            {
+                ScheduleOrRemoveDestination(destination);
+                return;
+            }
+
+            var completed = false;
+            try { completed = TryDeliver(message); }
+            catch (Exception ex) { stateException = ex; state = QueueState.Cautioned; }
+
+            lock (destination.SyncRoot)
+            {
+                destination.Processing = false;
+                if (completed)
+                {
+                    destination.Messages.DequeueWithoutValidation();
+                    destination.RetryAfterUtc = default(DateTime);
+                    Interlocked.Decrement(ref pendingCount);
+                }
+                else destination.RetryAfterUtc = GetNextAttemptUtc(message);
+            }
+            ScheduleOrRemoveDestination(destination);
         }
 
         private bool TryDeliver(OutboundMessage message)

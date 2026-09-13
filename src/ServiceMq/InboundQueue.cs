@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ServiceMq
 {
@@ -46,7 +47,15 @@ namespace ServiceMq
 
         public int Count { get { return queue.Count; } }
         public Exception StateException { get { return stateException ?? queue.ReloadException ?? store.LastException; } }
-        public QueueState State { get { return state == QueueState.Failed ? state : StateException == null ? state : QueueState.Cautioned; } }
+        public QueueState State
+        {
+            get
+            {
+                if (state == QueueState.Failed) return state;
+                if (StateException == null) return state;
+                return QueueState.Cautioned;
+            }
+        }
 
         public void ClearState()
         {
@@ -91,12 +100,23 @@ namespace ServiceMq
             incomingSignal.Set();
         }
 
+        public Task ReEnqueueAsync(Message message, CancellationToken cancellationToken = default)
+        {
+            if (message == null) throw new ArgumentNullException("message");
+            lock (leaseLock) leases.Remove(message.Id);
+            queue.ReEnqueue(message.Filename, message);
+            incomingSignal.Set();
+            return Task.CompletedTask;
+        }
+
         public Message Receive(int timeoutMs, bool logRead = true)
         {
             while (continueProcessing)
             {
                 if (!incomingSignal.WaitOne(timeoutMs)) break;
-                if (!continueProcessing) break;
+                // continueProcessing is volatile and written by Stop() from another thread,
+                // so this check is not constant; it exits promptly on stop.
+                if (!continueProcessing) break; // NOSONAR(S2589)
                 var message = queue.Dequeue();
                 if (message == null)
                 {
@@ -110,13 +130,38 @@ namespace ServiceMq
             return null;
         }
 
+        public async Task<Message> ReceiveAsync(int timeoutMs, bool logRead = true, CancellationToken cancellationToken = default)
+        {
+            var deadline = timeoutMs < 0 ? (DateTime?)null : DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (continueProcessing)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var message = await queue.DequeueAsync(cancellationToken).ConfigureAwait(false);
+                if (message != null)
+                {
+                    if (logRead) await CompleteAsync(message, cancellationToken).ConfigureAwait(false);
+                    else RegisterLease(message);
+                    return message;
+                }
+                if (queue.Count > 0) continue;
+                if (deadline.HasValue && DateTime.UtcNow >= deadline.Value) break;
+                var waitMs = deadline.HasValue
+                    ? (int)Math.Max(1, Math.Min(50, (deadline.Value - DateTime.UtcNow).TotalMilliseconds))
+                    : 50;
+                await Task.Delay(waitMs, cancellationToken).ConfigureAwait(false);
+            }
+            return null;
+        }
+
         public IList<Message> ReceiveBulk(int maxMessagesToReceive, int timeoutMs, bool logRead = true)
         {
             if (maxMessagesToReceive < 1) maxMessagesToReceive = 1;
             while (continueProcessing)
             {
                 if (!incomingSignal.WaitOne(timeoutMs)) break;
-                if (!continueProcessing) break;
+                // continueProcessing is volatile and written by Stop() from another thread,
+                // so this check is not constant; it exits promptly on stop.
+                if (!continueProcessing) break; // NOSONAR(S2589)
                 var messages = queue.DequeueBulk(maxMessagesToReceive);
                 if (messages.Count == 0)
                 {
@@ -133,11 +178,52 @@ namespace ServiceMq
             return new List<Message>();
         }
 
+        public async Task<IList<Message>> ReceiveBulkAsync(int maxMessagesToReceive, int timeoutMs, bool logRead = true, CancellationToken cancellationToken = default)
+        {
+            if (maxMessagesToReceive < 1) maxMessagesToReceive = 1;
+            var deadline = timeoutMs < 0 ? (DateTime?)null : DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (continueProcessing)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var messages = await queue.DequeueBulkAsync(maxMessagesToReceive, cancellationToken).ConfigureAwait(false);
+                if (messages.Count > 0)
+                {
+                    await CompleteMessagesAsync(messages, logRead, cancellationToken).ConfigureAwait(false);
+                    return messages;
+                }
+                if (deadline.HasValue && DateTime.UtcNow >= deadline.Value) break;
+                await Task.Delay(ComputeWaitMs(deadline), cancellationToken).ConfigureAwait(false);
+            }
+            return new List<Message>();
+        }
+
+        private async Task CompleteMessagesAsync(IList<Message> messages, bool logRead, CancellationToken cancellationToken)
+        {
+            foreach (var message in messages)
+            {
+                if (logRead) await CompleteAsync(message, cancellationToken).ConfigureAwait(false);
+                else RegisterLease(message);
+            }
+        }
+
+        private static int ComputeWaitMs(DateTime? deadline)
+        {
+            if (!deadline.HasValue) return 50;
+            return (int)Math.Max(1, Math.Min(50, (deadline.Value - DateTime.UtcNow).TotalMilliseconds));
+        }
+
         public void Acknowledge(Message message)
         {
             if (message == null) throw new ArgumentNullException("message");
             lock (leaseLock) leases.Remove(message.Id);
             Complete(message);
+        }
+
+        public async Task AcknowledgeAsync(Message message, CancellationToken cancellationToken = default)
+        {
+            if (message == null) throw new ArgumentNullException("message");
+            lock (leaseLock) leases.Remove(message.Id);
+            await CompleteAsync(message, cancellationToken).ConfigureAwait(false);
         }
 
         private void Complete(Message message)
@@ -147,6 +233,28 @@ namespace ServiceMq
                 var audit = CreateAudit(message, options.ReadAuditPayload);
                 if (audit != null) store.Append(StorageArea.Read, AuditKey("read"), audit, options.Durability);
                 store.Delete(StorageArea.Incoming, message.Filename);
+            }
+            catch (Exception ex)
+            {
+                stateException = ex;
+                state = QueueState.Cautioned;
+                throw;
+            }
+        }
+
+        private async Task CompleteAsync(Message message, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var audit = CreateAudit(message, options.ReadAuditPayload);
+                var asyncStore = store as IAsyncMessageStore;
+                if (audit != null)
+                {
+                    if (asyncStore != null) await asyncStore.AppendAsync(StorageArea.Read, AuditKey("read"), audit, options.Durability, cancellationToken).ConfigureAwait(false);
+                    else await Task.Run(() => store.Append(StorageArea.Read, AuditKey("read"), audit, options.Durability), cancellationToken).ConfigureAwait(false);
+                }
+                if (asyncStore != null) await asyncStore.DeleteAsync(StorageArea.Incoming, message.Filename, cancellationToken).ConfigureAwait(false);
+                else await Task.Run(() => store.Delete(StorageArea.Incoming, message.Filename), cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {

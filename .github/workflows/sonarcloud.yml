@@ -1,0 +1,100 @@
+name: SonarCloud
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  JDK_VERSION: '17'
+
+jobs:
+  check-sonar-token:
+    name: Check SONAR_TOKEN
+    runs-on: ubuntu-latest
+    outputs:
+      has-token: ${{ steps.check.outputs.defined }}
+    steps:
+      - id: check
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        # Job-level `if` cannot read secrets, so detect presence here and gate
+        # the analysis job via `needs` output. Keeps the workflow inert on repos
+        # where the token is not configured (e.g. upstream).
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "defined=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "defined=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  sonarcloud:
+    name: SonarCloud analysis
+    runs-on: ubuntu-latest
+    needs: check-sonar-token
+    if: needs.check-sonar-token.outputs.has-token == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: ${{ env.JDK_VERSION }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Install dotnet-sonarscanner
+        run: dotnet tool install --tool-path .tools dotnet-sonarscanner
+
+      - name: Begin scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.head_ref }}
+          PR_BASE: ${{ github.base_ref }}
+        run: |
+          args=(
+            "/k:MPCoreDeveloper_ServiceMq"
+            "/o:mpcoredeveloper"
+            "/d:sonar.host.url=https://sonarcloud.io"
+            "/d:sonar.token=$SONAR_TOKEN"
+          )
+          if [ -n "$PR_NUMBER" ]; then
+            args+=(
+              "/d:sonar.pullrequest.key=$PR_NUMBER"
+              "/d:sonar.pullrequest.branch=$PR_BRANCH"
+              "/d:sonar.pullrequest.base=$PR_BASE"
+            )
+          fi
+          ./.tools/dotnet-sonarscanner begin "${args[@]}"
+
+      - name: Build
+        run: dotnet build src/ServiceMq.slnx -c Release --nologo
+
+      - name: Test
+        run: dotnet test src/ServiceMq.slnx -c Release --no-build --nologo
+
+      - name: End scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: ./.tools/dotnet-sonarscanner end "/d:sonar.token=$SONAR_TOKEN"
+

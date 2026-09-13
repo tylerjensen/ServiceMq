@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace ServiceMq
 {
-    public sealed class MemoryMessageStore : IMessageStore
+    public sealed class MemoryMessageStore : IMessageStore, IAsyncMessageStore
     {
         private readonly object syncRoot = new object();
         private readonly Dictionary<StorageArea, SortedDictionary<string, StorageEntry>> areas =
@@ -153,6 +155,80 @@ namespace ServiceMq
         public void Flush() { }
         public void ClearException() { LastException = null; }
         public void Dispose() { }
+
+        // IAsyncMessageStore — all operations are in-memory, so the async surface completes the
+        // work synchronously under the same lock and returns a completed task.
+        public Task<IReadOnlyList<string>> GetKeysAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IReadOnlyList<string>>(GetKeys(area));
+        }
+
+        public Task<bool> ContainsAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(Contains(area, key));
+        }
+
+        public Task<StorageEntry> ReadAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(Read(area, key));
+        }
+
+        public Task WriteAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Write(area, key, value, durability);
+            return Task.CompletedTask;
+        }
+
+        public Task AppendAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Append(area, key, value, durability);
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Delete(area, key);
+            return Task.CompletedTask;
+        }
+
+        public Task MoveAsync(StorageArea source, StorageArea destination, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Move(source, destination, key);
+            return Task.CompletedTask;
+        }
+
+        public Task PurgeAsync(StorageArea area, DateTime olderThanUtc, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Purge(area, olderThanUtc);
+            return Task.CompletedTask;
+        }
+
+        public Task<StorageAreaStatistics> GetStatisticsAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(GetStatistics(area));
+        }
+
+        public Task ClearExceptionAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ClearException();
+            return Task.CompletedTask;
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
 
         private static StorageEntry Clone(StorageEntry entry, IList<string> appended)
         {

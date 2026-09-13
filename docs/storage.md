@@ -17,6 +17,7 @@ consumed or acknowledged.
 | `FileMessageStore` | Disk | Default; atomic file-per-message records and readable audit files |
 | `MemoryMessageStore` | Process only | Fast and isolated; all data disappears with the process |
 | `SqliteMessageStore` | Disk | Optional package; indexed records and SQLite transactions |
+| `SharpCoreDbMessageStore` | Disk | Optional package (net10.0); AES-256-GCM payload encryption, compact columnar storage |
 | Custom `IMessageStore` | Provider-defined | Integrate another local store or application-specific engine |
 
 ### Default file provider
@@ -56,7 +57,7 @@ If `Durability` is `MemoryOnly` and no provider is supplied, ServiceMq creates a
 ### SQLite provider
 
 ```shell
-dotnet add package ServiceMq.Sqlite --version 7.1.0
+dotnet add package ServiceMq.Sqlite --version 7.3.0
 ```
 
 ```csharp
@@ -75,7 +76,7 @@ message. `FlushStorage()` and orderly disposal perform an explicit full checkpoi
 ### SharpCoreDB provider
 
 ```shell
-dotnet add package ServiceMq.SharpCoreDb --version 7.1.0
+dotnet add package ServiceMq.SharpCoreDb --version 7.3.0
 ```
 
 ```csharp
@@ -90,6 +91,15 @@ SharpCoreDB is an optional provider that targets `net10.0` only, because the Sha
 package does. It is one storage choice among several, not a replacement for the file or
 SQLite stores. Payloads are sealed with AES-256-GCM under a key derived from the required
 master password (no default), and a store directory is owned by one instance at a time.
+
+Package 7.1.1 ships against the **SharpCoreDB 2.0.0.2** engine (the performance-first 2.x
+line). It is an in-place, backwards-compatible engine upgrade: existing stores created by
+7.1.0 / SharpCoreDB 1.9.3 open and run unchanged, the `ITable`-based API surface and store
+format (`v1`) are untouched, and no code changes are required. Brand-new store directories
+default to the fastest storage mode measured for this provider's workload (the legacy
+variable-length record layout) and record that choice in the store manifest; the storage mode
+is configurable per store through the `DatabaseConfig` constructor parameter.
+
 See the package README (`docs/sharpcoredb-provider.md` inside the nupkg, or
 `src/ServiceMq.SharpCoreDb/README.md` in the repository) for the format, the ownership
 rules, and benchmarks against SQLite.

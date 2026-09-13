@@ -3,10 +3,11 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ServiceMq
 {
-    internal sealed class ConfiguredMessageStore : IMessageStore
+    internal sealed class ConfiguredMessageStore : IMessageStore, IAsyncMessageStore
     {
         private readonly object capacityLock = new object();
         private readonly IMessageStore inner;
@@ -165,6 +166,125 @@ namespace ServiceMq
         public void ClearException() { inner.ClearException(); }
         public void Dispose() { if (disposeInner) inner.Dispose(); }
 
+        // IAsyncMessageStore — delegates to the inner store's async surface when it implements
+        // IAsyncMessageStore, otherwise offloads the synchronous call. The capacity wait path
+        // (WriteAsync when full) is offloaded because it can block up to FullWaitTimeout.
+        public Task<IReadOnlyList<string>> GetKeysAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.GetKeysAsync(area, cancellationToken);
+            return Task.Run(() => inner.GetKeys(area), cancellationToken);
+        }
+
+        public Task<bool> ContainsAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.ContainsAsync(area, key, cancellationToken);
+            return Task.Run(() => inner.Contains(area, key), cancellationToken);
+        }
+
+        public async Task<StorageEntry> ReadAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            var asyncInner = inner as IAsyncMessageStore;
+            StorageEntry entry;
+            if (capacityEnabled && IsActiveArea(area))
+            {
+                entry = asyncInner != null
+                    ? await asyncInner.ReadAsync(area, key, cancellationToken).ConfigureAwait(false)
+                    : await Task.Run(() => inner.Read(area, key), cancellationToken).ConfigureAwait(false);
+                lock (capacityLock) Lengths(area)[key] = entry.Length;
+            }
+            else
+            {
+                entry = asyncInner != null
+                    ? await asyncInner.ReadAsync(area, key, cancellationToken).ConfigureAwait(false)
+                    : await Task.Run(() => inner.Read(area, key), cancellationToken).ConfigureAwait(false);
+            }
+            if (options.Protector != null && IsProtectedArea(area)) entry.Value = options.Protector.Unprotect(entry.Value);
+            return entry;
+        }
+
+        public Task WriteAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            var storedValue = options.Protector != null && IsProtectedArea(area)
+                ? options.Protector.Protect(value)
+                : value;
+            if (!capacityEnabled || !IsActiveArea(area))
+            {
+                var asyncInner = inner as IAsyncMessageStore;
+                if (asyncInner != null) return asyncInner.WriteAsync(area, key, storedValue, durability, cancellationToken);
+                return Task.Run(() => inner.Write(area, key, storedValue, durability), cancellationToken);
+            }
+            return Task.Run(() => WriteWithCapacity(area, key, storedValue, durability), cancellationToken);
+        }
+
+        public Task AppendAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            var storedValue = options.Protector == null ? value : options.Protector.Protect(value);
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.AppendAsync(area, key, storedValue, durability, cancellationToken);
+            return Task.Run(() => inner.Append(area, key, storedValue, durability), cancellationToken);
+        }
+
+        public Task DeleteAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.DeleteAsync(area, key, cancellationToken);
+            return Task.Run(() => inner.Delete(area, key), cancellationToken);
+        }
+
+        public Task MoveAsync(StorageArea source, StorageArea destination, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.MoveAsync(source, destination, key, cancellationToken);
+            return Task.Run(() => inner.Move(source, destination, key), cancellationToken);
+        }
+
+        public async Task PurgeAsync(StorageArea area, DateTime olderThanUtc, CancellationToken cancellationToken = default)
+        {
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) await asyncInner.PurgeAsync(area, olderThanUtc, cancellationToken).ConfigureAwait(false);
+            else await Task.Run(() => inner.Purge(area, olderThanUtc), cancellationToken).ConfigureAwait(false);
+            if (capacityEnabled && IsActiveArea(area))
+            {
+                var statistics = await GetStatisticsAsync(area, cancellationToken).ConfigureAwait(false);
+                lock (capacityLock)
+                {
+                    SetCounters(area, statistics.Count, statistics.Bytes);
+                    Lengths(area).Clear();
+                    Monitor.PulseAll(capacityLock);
+                }
+            }
+        }
+
+        public Task<StorageAreaStatistics> GetStatisticsAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.GetStatisticsAsync(area, cancellationToken);
+            return Task.Run(() => inner.GetStatistics(area), cancellationToken);
+        }
+
+        public Task ClearExceptionAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.ClearExceptionAsync(cancellationToken);
+            return Task.Run(() => inner.ClearException(), cancellationToken);
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var asyncInner = inner as IAsyncMessageStore;
+            if (asyncInner != null) return asyncInner.FlushAsync(cancellationToken);
+            return Task.Run(() => inner.Flush(), cancellationToken);
+        }
+
         private void WriteWithCapacity(StorageArea area, string key, string value, DurabilityMode durability)
         {
             var deadline = DateTime.UtcNow + options.FullWaitTimeout;
@@ -172,35 +292,43 @@ namespace ServiceMq
             {
                 while (true)
                 {
-                    long previousLength;
-                    var exists = TryGetLength(area, key, out previousLength);
-                    var addedMessages = exists ? 0 : 1;
-                    var valueLength = Encoding.UTF8.GetByteCount(value ?? string.Empty);
-                    var addedBytes = valueLength - previousLength;
-                    var messagesFit = !options.MaxMessages.HasValue ||
-                        incomingCount + outgoingCount + addedMessages <= options.MaxMessages.Value;
-                    var bytesFit = !options.MaxBytes.HasValue ||
-                        incomingBytes + outgoingBytes + addedBytes <= options.MaxBytes.Value;
-                    if (messagesFit && bytesFit)
-                    {
-                        inner.Write(area, key, value, durability);
-                        AddToCounters(area, addedMessages, addedBytes);
-                        Lengths(area)[key] = valueLength;
-                        return;
-                    }
-
-                    if (options.FullBehavior == QueueFullBehavior.DropOldest)
-                    {
-                        if (!DropOldest()) throw CapacityException();
-                        continue;
-                    }
-                    if (options.FullBehavior == QueueFullBehavior.Reject) throw CapacityException();
-
-                    var remaining = deadline - DateTime.UtcNow;
-                    if (remaining <= TimeSpan.Zero) throw CapacityException();
-                    Monitor.Wait(capacityLock, remaining);
+                    if (TryWriteIfFits(area, key, value, durability)) return;
+                    WaitForCapacity(deadline);
                 }
             }
+        }
+
+        private bool TryWriteIfFits(StorageArea area, string key, string value, DurabilityMode durability)
+        {
+            long previousLength;
+            var exists = TryGetLength(area, key, out previousLength);
+            var addedMessages = exists ? 0 : 1;
+            var valueLength = Encoding.UTF8.GetByteCount(value ?? string.Empty);
+            var addedBytes = valueLength - previousLength;
+            var messagesFit = !options.MaxMessages.HasValue ||
+                incomingCount + outgoingCount + addedMessages <= options.MaxMessages.Value;
+            var bytesFit = !options.MaxBytes.HasValue ||
+                incomingBytes + outgoingBytes + addedBytes <= options.MaxBytes.Value;
+            if (!messagesFit || !bytesFit) return false;
+
+            inner.Write(area, key, value, durability);
+            AddToCounters(area, addedMessages, addedBytes);
+            Lengths(area)[key] = valueLength;
+            return true;
+        }
+
+        private void WaitForCapacity(DateTime deadline)
+        {
+            if (options.FullBehavior == QueueFullBehavior.DropOldest)
+            {
+                if (!DropOldest()) throw CapacityException();
+                return;
+            }
+            if (options.FullBehavior == QueueFullBehavior.Reject) throw CapacityException();
+
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero) throw CapacityException();
+            Monitor.Wait(capacityLock, remaining);
         }
 
         private bool DropOldest()
@@ -269,7 +397,7 @@ namespace ServiceMq
             }
         }
 
-        private QueueCapacityExceededException CapacityException()
+        private static QueueCapacityExceededException CapacityException()
         {
             return new QueueCapacityExceededException("The ServiceMq storage capacity limit has been reached.");
         }

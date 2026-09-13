@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using SharpCoreDB;
 using SharpCoreDB.Interfaces;
@@ -17,7 +18,7 @@ namespace ServiceMq
 {
     /// <summary>
     /// SharpCoreDB storage provider for ServiceMq. Requires .NET 10.0 because the
-    /// SharpCoreDB NuGet package (1.9.3) targets net10.0 only.
+    /// SharpCoreDB NuGet package (2.0.0.3) targets net10.0 only.
     /// <para>
     /// Uses SharpCoreDB <b>directory mode</b> with the direct <c>ITable</c> API. A single
     /// table holds all storage areas; the primary key is namespaced
@@ -31,16 +32,17 @@ namespace ServiceMq
     /// no-op B-tree index, so directory mode is required for correct point operations.
     /// </para>
     /// <para>
-    /// <b>Deletes are tombstones.</b> SharpCoreDB 1.9.3's append-oriented storage writes
-    /// inserts and updates through to the table data file, but row removals (via
-    /// <c>DeleteByPrimaryKey</c> or SQL <c>DELETE</c>, with or without <c>Flush</c>,
-    /// <c>ForceSave</c>, or <c>Vacuum</c>) are applied in memory and are present again on the
-    /// next open; <c>Table.CompactStorage()</c> was not yet consistent enough in our runs to
-    /// rely on. The provider therefore marks a deleted row with <c>area = -1</c> and an empty
-    /// value, which is durable, and reclaims space by periodically rewriting live rows into a
-    /// fresh generation of the table (see <see cref="Compact"/>). Tombstoned rows are invisible
-    /// to every read API. This is intended to give way to physical deletes once a SharpCoreDB
-    /// release records removals durably; see the package README.
+    /// <b>Deletes are tombstones.</b> SharpCoreDB 1.9.x's append-oriented storage applied row
+    /// removals (via <c>DeleteByPrimaryKey</c> or SQL <c>DELETE</c>, with or without <c>Flush</c>,
+    /// <c>ForceSave</c>, or <c>Vacuum</c>) in memory only, so they were present again on the next
+    /// open. The 2.0.0.2 engine now records deletes durably with commit-time tombstone markers,
+    /// but this provider keeps its own deletion convention (below) so stores written by the
+    /// 7.1.0 / 1.9.3 package keep working with zero migration and nothing written by this version
+    /// depends on 2.x-only file markers. A deleted row is rewritten with <c>area = -1</c> and an
+    /// empty value, which is durable, and space is reclaimed by periodically rewriting live rows
+    /// into a fresh generation of the table (see <see cref="Compact"/>). Tombstoned rows are
+    /// invisible to every read API. A later release is expected to give way to physical deletes;
+    /// see the package README.
     /// </para>
     /// <para>
     /// <b>Ownership.</b> A store directory has exactly one open <see cref="SharpCoreDbMessageStore"/>
@@ -50,16 +52,17 @@ namespace ServiceMq
     /// matches how <see cref="MessageQueue"/> owns <see cref="StorageOptions.Provider"/>.
     /// </para>
     /// <para>
-    /// <b>Payload encryption.</b> SharpCoreDB 1.9.3 writes table data unencrypted to
-    /// <c>*.dat</c>, so this provider encrypts every payload itself with AES-256-GCM. The key
-    /// is derived with PBKDF2-HMAC-SHA256 from the caller-supplied master password and a
-    /// random per-store salt recorded in the store manifest (<c>servicemq-store.json</c>)
-    /// alongside the data. This is independent of, and composes with,
-    /// <see cref="StorageOptions.Protector"/>: configuring an <see cref="IStorageProtector"/>
+    /// <b>Payload encryption.</b> SharpCoreDB 2.0.0.2 (like the 1.9.x default) leaves table
+    /// payloads unencrypted in <c>*.dat</c> unless the engine's opt-in per-record at-rest
+    /// encryption flag is enabled, so this provider encrypts every payload itself with
+    /// AES-256-GCM. The key is derived with PBKDF2-HMAC-SHA256 from the caller-supplied master
+    /// password and a random per-store salt recorded in the store manifest
+    /// (<c>servicemq-store.json</c>) alongside the data. This is independent of, and composes
+    /// with, <see cref="StorageOptions.Protector"/>: configuring an <see cref="IStorageProtector"/>
     /// as well simply encrypts the payload twice.
     /// </para>
     /// </summary>
-    public sealed class SharpCoreDbMessageStore : IMessageStore
+    public sealed class SharpCoreDbMessageStore : IMessageStore, IAsyncMessageStore
     {
         private const string DefaultTableName = "queue_items";
         private const string GenerationSuffix = "_g";
@@ -125,12 +128,45 @@ namespace ServiceMq
         /// </summary>
         internal int CompactionMinimumTombstones { get; set; } = 4096;
 
+        /// <summary>
+        /// Engine configuration used for <b>brand-new</b> store directories when the caller does
+        /// not pass a <see cref="DatabaseConfig"/>. On the measured ServiceMq workload the
+        /// fastest <em>correct</em> SharpCoreDB 2.0.0.2 mode is the legacy variable-length record
+        /// layout (<see cref="DatabaseConfig.AutoFixedWidthRecords"/> = <see langword="false"/>):
+        /// it keeps the 1.9.3-era record format this provider was written for and measures several
+        /// times faster than the fixed-width columnar default for the queue's single-row
+        /// insert/update/read/delete pattern, while still running on the hardened 2.0 engine.
+        /// (The PageBased engine measured even faster in one session but its primary-key index is
+        /// not rebuilt on reopen — <c>FindByPrimaryKey</c> returns null after a reopen — so it is
+        /// not used as the default.) Existing store directories keep whatever layout created them
+        /// (the engine persists the per-table record format), which preserves backwards
+        /// compatibility with stores written by 7.1.0 / SharpCoreDB 1.9.3. Callers can override
+        /// this for any store by passing an explicit <see cref="DatabaseConfig"/> (for example
+        /// <c>new DatabaseConfig()</c> for the engine's fixed-width default) to the constructor.
+        /// </summary>
+        private static DatabaseConfig DefaultNewStoreConfig() => new()
+        {
+            AutoFixedWidthRecords = false
+        };
+
+        /// <summary>Manifest marker for stores created on the fast new-store default.</summary>
+        private const string EngineMarkerFast = "fast";
+
         /// <param name="databasePath">Directory that holds the SharpCoreDB database.</param>
         /// <param name="masterPassword">
         /// Master password. It opens the SharpCoreDB database and, via PBKDF2, derives the
         /// payload encryption key. There is deliberately no default: a shipped constant would
         /// be public knowledge and the resulting encryption at rest would protect nothing.
         /// The same password must be supplied to reopen an existing store.
+        /// </param>
+        /// <param name="config">
+        /// Optional SharpCoreDB engine configuration. When <see langword="null"/>, a brand-new
+        /// store directory uses the provider's fast default (the legacy variable-length record
+        /// layout — see <see cref="DatabaseConfig.AutoFixedWidthRecords"/>) and an existing store
+        /// reopens with whatever layout created it (recorded in the store manifest). Pass an
+        /// explicit <see cref="DatabaseConfig"/> (for instance
+        /// <c>new DatabaseConfig { AutoFixedWidthRecords = true }</c>) to choose a different
+        /// engine mode; the value is applied to new and existing stores alike.
         /// </param>
         public SharpCoreDbMessageStore(string databasePath, string masterPassword)
             : this(databasePath, masterPassword, null, null)
@@ -173,10 +209,20 @@ namespace ServiceMq
                     .BuildServiceProvider();
 
                 var factory = new DatabaseFactory(provider);
+
+                // Engine mode: an explicit DatabaseConfig always wins. Otherwise the layout the
+                // store was created with must be reused on every open (SharpCoreDB's storage
+                // engine selection is driven by the config, so a mismatched reopen can silently
+                // read an empty table). A brand-new store directory gets the fast new-store
+                // default and records it in the manifest; a store whose manifest carries that
+                // marker reopens the same way; stores created by 7.1.0 / SharpCoreDB 1.9.3 (no
+                // marker) keep the neutral engine defaults so the persisted legacy layout decides.
+                var (effectiveConfig, engineMarker) = ResolveEngineConfig(config, loaded, DatabasePath);
+
                 // Directory mode. EnableBatchEncryption MUST be true: SharpCoreDB append
                 // storage only encrypts table data files when this flag is set
                 // (Storage.Append.cs). Payloads are additionally sealed by this provider.
-                db = factory.Create(DatabasePath, masterPassword, false, WithBatchEncryption(config));
+                db = factory.Create(DatabasePath, masterPassword, false, WithBatchEncryption(effectiveConfig));
 
                 tableName = loaded?.Table ?? DefaultTableName;
                 DropLeftoverGenerations(db, DatabasePath, tableName);
@@ -185,7 +231,7 @@ namespace ServiceMq
                 // The index needs only keys and metadata, not the cipher, so it is built before
                 // the manifest decision: an unversioned directory is only rejected if it holds rows.
                 RebuildIndex();
-                manifest = ResolveManifest(DatabasePath, loaded, IndexedRowCount() + tombstones.Count);
+                manifest = ResolveManifest(DatabasePath, loaded, IndexedRowCount() + tombstones.Count, engineMarker);
 
                 var payloadKey = DerivePayloadKey(masterPassword, manifest);
                 cipher = new AesGcm(payloadKey, TagLength);
@@ -200,10 +246,11 @@ namespace ServiceMq
             }
             catch (Exception ex)
             {
-                try { db?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-                try { cipher?.Dispose(); } catch { }
-                try { provider?.Dispose(); } catch { }
-                try { lockFile?.Dispose(); } catch { }
+                // Each resource is released best-effort so a partial open failure leaks nothing.
+                try { db?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { /* best-effort */ }
+                try { cipher?.Dispose(); } catch { /* best-effort */ }
+                try { provider?.Dispose(); } catch { /* best-effort */ }
+                try { lockFile?.Dispose(); } catch { /* best-effort */ }
                 lastException = ex;
                 throw;
             }
@@ -212,6 +259,26 @@ namespace ServiceMq
             // consistent store (see Compact) and must not fail the open.
             try { MaybeCompact(); }
             catch (Exception ex) { lastException = ex; }
+        }
+
+        private static (DatabaseConfig? Config, string? EngineMarker) ResolveEngineConfig(
+            DatabaseConfig? config, StoreManifest? loaded, string databasePath)
+        {
+            string? engineMarker = null;
+            var effectiveConfig = config;
+            if (effectiveConfig == null)
+            {
+                if (string.Equals(loaded?.Engine, EngineMarkerFast, StringComparison.Ordinal))
+                {
+                    effectiveConfig = DefaultNewStoreConfig();
+                }
+                else if (loaded == null && IsNewStoreDirectory(databasePath))
+                {
+                    effectiveConfig = DefaultNewStoreConfig();
+                    engineMarker = EngineMarkerFast;
+                }
+            }
+            return (effectiveConfig, engineMarker);
         }
 
         public IReadOnlyList<string> GetKeys(StorageArea area)
@@ -431,7 +498,8 @@ namespace ServiceMq
                 catch (Exception ex)
                 {
                     // Many keys may have been touched; re-derive the whole index from the table.
-                    try { RebuildIndex(); } catch { }
+                    // Rebuilding is best-effort; the purge failure is what gets reported.
+                    try { RebuildIndex(); } catch { /* best-effort; the purge failure is what gets reported */ }
                     lastException = ex;
                     throw;
                 }
@@ -487,7 +555,8 @@ namespace ServiceMq
                 // goes last so the directory is only handed back once everything else is closed.
                 try
                 {
-                    try { database.Flush(); } catch { }
+                    // Best-effort flush; disposal proceeds even if the flush fails.
+                    try { database.Flush(); } catch { /* best-effort; disposal proceeds */ }
                     database.DisposeAsync().AsTask().GetAwaiter().GetResult();
                 }
                 finally
@@ -500,6 +569,76 @@ namespace ServiceMq
                     }
                 }
             }
+        }
+
+        // IAsyncMessageStore — SharpCoreDB's direct ITable point operations are fast and already
+        // serialized on syncRoot, so the async surface offloads the synchronous work to the thread
+        // pool, keeping the caller's thread free without changing the storage semantics.
+        public Task<IReadOnlyList<string>> GetKeysAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => GetKeys(area), cancellationToken);
+        }
+
+        public Task<bool> ContainsAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Contains(area, key), cancellationToken);
+        }
+
+        public Task<StorageEntry> ReadAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Read(area, key), cancellationToken);
+        }
+
+        public Task WriteAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Write(area, key, value, durability), cancellationToken);
+        }
+
+        public Task AppendAsync(StorageArea area, string key, string value, DurabilityMode durability, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Append(area, key, value, durability), cancellationToken);
+        }
+
+        public Task DeleteAsync(StorageArea area, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Delete(area, key), cancellationToken);
+        }
+
+        public Task MoveAsync(StorageArea source, StorageArea destination, string key, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Move(source, destination, key), cancellationToken);
+        }
+
+        public Task PurgeAsync(StorageArea area, DateTime olderThanUtc, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Purge(area, olderThanUtc), cancellationToken);
+        }
+
+        public Task<StorageAreaStatistics> GetStatisticsAsync(StorageArea area, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => GetStatistics(area), cancellationToken);
+        }
+
+        public Task ClearExceptionAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ClearException();
+            return Task.CompletedTask;
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.Run(() => Flush(), cancellationToken);
         }
 
         // ----- rows, tombstones, compaction ----------------------------------------------
@@ -593,7 +732,8 @@ namespace ServiceMq
             }
             catch
             {
-                try { DropTable(database, nextName); } catch { }
+                // Best-effort rollback of the new generation; the compaction failure is rethrown.
+                try { DropTable(database, nextName); } catch { /* best-effort; the compaction failure is rethrown */ }
                 throw;
             }
 
@@ -618,7 +758,10 @@ namespace ServiceMq
                 (previousRaw as IDisposable)?.Dispose();
                 File.Delete(Path.Combine(DatabasePath, previousName + ".dat"));
             }
-            catch { }
+            catch
+            {
+                // Best-effort space reclamation; the store is already consistent if this fails.
+            }
         }
 
         private IQueueTable OpenTable(IDatabase db, string name, out ITable raw)
@@ -655,7 +798,8 @@ namespace ServiceMq
             {
                 var stem = Path.GetFileNameWithoutExtension(file);
                 if (!IsGenerationName(stem) || catalogued.Contains(stem)) continue;
-                try { File.Delete(file); } catch (IOException) { }
+                // Best-effort delete; a file still open elsewhere is retried at the next open.
+                try { File.Delete(file); } catch (IOException) { /* best-effort; retried at the next open */ }
             }
         }
 
@@ -781,7 +925,10 @@ namespace ServiceMq
                     tombstones.Remove(rowId);
                 }
             }
-            catch { }
+            catch
+            {
+                // Never throws: this runs inside catch blocks and must not mask the original failure.
+            }
         }
 
         private long IndexedRowCount()
@@ -831,6 +978,15 @@ namespace ServiceMq
         }
 
         /// <summary>
+        /// Returns true when the directory has no SharpCoreDB database yet (no directory-mode
+        /// <c>meta.dat</c>) and no ServiceMq store manifest — i.e. this open is creating a brand
+        /// new store. The fast new-store engine default is applied only in that case.
+        /// </summary>
+        private static bool IsNewStoreDirectory(string databasePath) =>
+            !File.Exists(Path.Combine(databasePath, "meta.dat")) &&
+            !File.Exists(Path.Combine(databasePath, ManifestFileName));
+
+        /// <summary>
         /// Loads <c>servicemq-store.json</c> if present. Returns null when the directory has no
         /// manifest yet; the caller decides whether that means "new store" or "unsupported".
         /// </summary>
@@ -856,7 +1012,7 @@ namespace ServiceMq
         /// pre-7.1.0 layout) and is rejected rather than silently re-keyed: every payload in it
         /// would fail authentication under a freshly generated salt.
         /// </summary>
-        private static StoreManifest ResolveManifest(string databasePath, StoreManifest? existing, long rowCount)
+        private static StoreManifest ResolveManifest(string databasePath, StoreManifest? existing, long rowCount, string? engineMarker)
         {
             var manifestPath = Path.Combine(databasePath, ManifestFileName);
             if (existing != null)
@@ -873,6 +1029,10 @@ namespace ServiceMq
                     throw new InvalidDataException("The ServiceMq store manifest at " + manifestPath + " has an invalid iteration count.");
                 if (existing.DecodeSalt().Length != SaltLength)
                     throw new InvalidDataException("The ServiceMq store manifest at " + manifestPath + " has an invalid salt; expected " + SaltLength + " bytes.");
+                if (existing.Engine is not null && existing.Engine != EngineMarkerFast)
+                    throw new NotSupportedException(
+                        "The ServiceMq store at '" + databasePath + "' was created with engine '" + existing.Engine +
+                        "', which is not supported by this version of ServiceMq.SharpCoreDb.");
                 existing.Table ??= DefaultTableName;
                 return existing;
             }
@@ -888,9 +1048,10 @@ namespace ServiceMq
                 FormatVersion = CurrentFormatVersion,
                 Kdf = KeyDerivationFunction,
                 Iterations = DefaultKeyDerivationIterations,
-                EnvelopeVersion = EnvelopeVersion,
+                PayloadEnvelopeVersion = EnvelopeVersion,
                 Salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(SaltLength)),
-                Table = DefaultTableName
+                Table = DefaultTableName,
+                Engine = engineMarker
             };
             WriteManifest(databasePath, manifest);
             return manifest;
@@ -981,16 +1142,19 @@ namespace ServiceMq
             foreach (var kvp in row)
             {
                 if (string.Equals(kvp.Key, name, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (kvp.Value == null) return 0;
-                    if (kvp.Value is long l) return l;
-                    if (kvp.Value is int i) return i;
-                    if (kvp.Value is double d) return (long)d;
-                    if (kvp.Value is decimal m) return (long)m;
-                    return Convert.ToInt64(kvp.Value);
-                }
+                    return ToInt64(kvp.Value);
             }
             return 0;
+        }
+
+        private static long ToInt64(object value)
+        {
+            if (value == null) return 0;
+            if (value is long l) return l;
+            if (value is int i) return i;
+            if (value is double d) return (long)d;
+            if (value is decimal m) return (long)m;
+            return Convert.ToInt64(value);
         }
 
         private readonly struct RowMetadata(long length, long createdTicks, long modifiedTicks)
@@ -1013,10 +1177,19 @@ namespace ServiceMq
             public int FormatVersion { get; set; }
             public string Kdf { get; set; } = string.Empty;
             public int Iterations { get; set; }
-            public int EnvelopeVersion { get; set; }
+            public int PayloadEnvelopeVersion { get; set; }
             public string Salt { get; set; } = string.Empty;
             /// <summary>Active table name; compaction advances it through generations.</summary>
             public string? Table { get; set; }
+
+            /// <summary>
+            /// Optional engine marker written for stores created by this package with the fast
+            /// new-store default (legacy variable-length records). Absent on stores created by
+            /// 7.1.0 / SharpCoreDB 1.9.3 or when the caller supplied an explicit
+            /// <see cref="DatabaseConfig"/>. Reopening must use the same configuration the store
+            /// was created with, so a null <see cref="DatabaseConfig"/> maps back through this field.
+            /// </summary>
+            public string? Engine { get; set; }
 
             public byte[] DecodeSalt()
             {

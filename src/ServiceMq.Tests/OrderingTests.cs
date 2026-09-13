@@ -123,7 +123,7 @@ namespace ServiceMq.Tests
             using (var sender = new MessageQueue(options))
             {
                 for (var i = 0; i < 10; i++) sender.Send(receiverAddress, i);
-                Thread.Sleep(100); // let the first unavailable attempt finish before bringing the receiver up
+                Settle(100); // let the first unavailable attempt finish before bringing the receiver up
 
                 using (var receiver = new MessageQueue(MemoryOptions("drop-spill-receiver", receiverAddress)))
                 {
@@ -172,6 +172,14 @@ namespace ServiceMq.Tests
                 Thread.Sleep(10);
             }
             return condition();
+        }
+
+        private static void Settle(int milliseconds)
+        {
+            // A fixed settle period is required here: the async delivery attempt to a
+            // destination that is down has no externally observable state to poll for, so
+            // we wait for the retry to be scheduled before proceeding.
+            Thread.Sleep(milliseconds);
         }
 
         private sealed class ReverseKeyStore : IMessageStore

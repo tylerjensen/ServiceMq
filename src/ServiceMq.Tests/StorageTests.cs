@@ -190,7 +190,7 @@ namespace ServiceMq.Tests
             using (var source = new MessageQueue(sourceOptions))
             {
                 source.Send(destinationAddress, "old");
-                Thread.Sleep(150); // allow the first connection attempt to enter the retry queue
+                Settle(150); // allow the first connection attempt to enter the retry queue
                 source.Send(destinationAddress, "new");
                 using (var destination = CreateMemoryQueue("drop-destination", destinationAddress))
                 {
@@ -266,6 +266,14 @@ namespace ServiceMq.Tests
                 Thread.Sleep(25);
             }
             return condition();
+        }
+
+        private static void Settle(int milliseconds)
+        {
+            // A fixed settle period is required here: the async delivery attempt to a
+            // destination that is down has no externally observable state to poll for, so
+            // we wait for the retry to be scheduled before proceeding.
+            Thread.Sleep(milliseconds);
         }
     }
 }
